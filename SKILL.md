@@ -11,6 +11,9 @@ description: Use when Codex needs to work with one or more self-hosted or cloud 
 - Do not answer with a shell tutorial when the skill is already installed and authentication exists.
 - Show commands only when the user explicitly asks for instructions or when setup/auth is missing.
 - Answer in the user's language unless the user explicitly asks for a different language.
+- The final answer must be entirely in the user's language.
+- Do not mix English into headings, summaries, connective text, or explanatory sentences when the user wrote in Russian.
+- Keep original language only for literal field values, workflow states, issue ids, board ids, and raw URLs.
 - Do not repeat an identical successful read command. Reuse the first successful result unless the context changed or the first result was incomplete.
 - Before sending the final answer, do one completeness check against the original user request. If the answer is not good enough yet, keep using tools instead of finalizing.
 - Resolve command paths from this skill file path.
@@ -158,12 +161,17 @@ For task lists on a board or sprint:
 - include sprint name when available
 - include total matching issue count
 - list every matching issue id, summary, state, and type
+- include the full raw issue URL for every listed issue when the tool payload provides it
 - do not omit `Done` issues unless the user explicitly asks for only active or unresolved work
 - write the final answer in the user's language
+- localize the fixed labels and headers of the answer to the user's language
+- do not use English column headers like `Issue`, `Summary`, `State`, `Type`, or `URL` when the user asked in Russian
 
 For a single issue:
 
 - include id, summary, state, type, priority, assignee, and the main description
+- include a dedicated `Link:` line near the top when the tool payload provides a full issue URL
+- localize fixed labels like `Link:` to the user's language
 
 ## Pre-final Check
 
@@ -176,6 +184,7 @@ Before sending the final answer:
    - If the user named a specific instance, board, sprint, or issue, does the answer refer to that exact target?
    - Does the answer satisfy the output contract for this query type?
    - Is the answer still telling the user to run commands even though the skill and auth are already available?
+   - Is every non-literal part of the final answer written in the user's language?
 4. If any answer is "no", continue with the next needed tool call instead of finalizing.
 5. If all answers are "yes", send that draft as the final answer.
 

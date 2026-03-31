@@ -272,6 +272,10 @@ def instance_config_values(label: str) -> dict[str, str]:
     return {key: value for key, value in values.items() if value is not None}
 
 
+def base_url_for_label(label: str) -> Optional[str]:
+    return instance_config_values(validate_label(label)).get("YOUTRACK_BASE_URL")
+
+
 def update_instance_config_values(label: str, updates: dict[str, Optional[str]]) -> dict[str, str]:
     normalized_label = validate_label(label)
     values = instance_config_values(normalized_label)

@@ -22,6 +22,7 @@ from youtrack_cli.services.base import BaseService
 from instance_runtime import (
     InstanceRuntimeError,
     activated_auth_manager,
+    base_url_for_label,
     instances_current_payload,
     instances_list_payload,
     scoped_board_ids_for_label,
@@ -199,15 +200,26 @@ def extract_custom_field(issue: dict[str, Any], field_name: str) -> Any:
     return CustomFieldManager.extract_field_value(issue.get("customFields", []), field_name)
 
 
-def normalize_issue(issue: dict[str, Any], preferred_id: Optional[str] = None) -> dict[str, Any]:
+def build_issue_url(base_url: Optional[str], issue_id: Optional[str]) -> Optional[str]:
+    if not base_url or not issue_id:
+        return None
+    return f"{base_url.rstrip('/')}/issue/{issue_id}"
+
+
+def normalize_issue(
+    issue: dict[str, Any],
+    preferred_id: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict[str, Any]:
     assignee = issue.get("assignee") or {}
+    normalized_id = first_non_empty(preferred_id, issue.get("idReadable"), issue.get("id"))
     normalized_custom_fields = {
         field["name"]: normalize_value(field.get("value"))
         for field in issue.get("customFields", [])
         if field.get("name")
     }
-    return {
-        "id": first_non_empty(preferred_id, issue.get("idReadable"), issue.get("id")),
+    normalized = {
+        "id": normalized_id,
         "summary": issue.get("summary"),
         "description": issue.get("description"),
         "project": (issue.get("project") or {}).get("name"),
@@ -224,6 +236,10 @@ def normalize_issue(issue: dict[str, Any], preferred_id: Optional[str] = None) -
         "updated": issue.get("updated"),
         "custom_fields": normalized_custom_fields,
     }
+    issue_url = build_issue_url(base_url, normalized_id)
+    if issue_url:
+        normalized["url"] = issue_url
+    return normalized
 
 
 def normalize_board(board: dict[str, Any]) -> dict[str, Any]:
@@ -460,6 +476,7 @@ async def build_board_issues_payload(
     state: Optional[str],
     limit: Optional[int],
     raw: bool,
+    base_url: Optional[str] = None,
 ) -> dict[str, Any]:
     board_result = await quiet_await(service.get_board(board_id))
     if board_result["status"] != "success":
@@ -518,7 +535,7 @@ async def build_board_issues_payload(
         "source": source,
         "unresolved_issues_count": unresolved_issues_count,
         "filters": filters,
-        "issues": issues if raw else [normalize_issue(issue) for issue in issues],
+        "issues": issues if raw else [normalize_issue(issue, base_url=base_url) for issue in issues],
     }
     payload["issue_count"] = len(payload["issues"])
     return payload
@@ -561,6 +578,7 @@ async def handle_board(
     args: argparse.Namespace,
     auth_manager: AuthManager,
     selection_label: str,
+    base_url: Optional[str] = None,
 ) -> None:
     service = AgileService(auth_manager)
 
@@ -629,6 +647,7 @@ async def handle_board(
                 state=args.state,
                 limit=args.limit,
                 raw=args.raw,
+                base_url=base_url,
             )
         )
         return
@@ -661,6 +680,7 @@ async def handle_board(
                     state=args.state,
                     limit=args.limit,
                     raw=args.raw,
+                    base_url=base_url,
                 )
             )
         dump(
@@ -686,7 +706,11 @@ def parse_custom_fields(values: list[str]) -> dict[str, str]:
     return result
 
 
-async def handle_issue(args: argparse.Namespace, auth_manager: AuthManager) -> None:
+async def handle_issue(
+    args: argparse.Namespace,
+    auth_manager: AuthManager,
+    base_url: Optional[str] = None,
+) -> None:
     manager = IssueManager(auth_manager)
     board_service = AgileService(auth_manager)
 
@@ -735,7 +759,7 @@ async def handle_issue(args: argparse.Namespace, auth_manager: AuthManager) -> N
         if args.raw:
             dump(issue)
         else:
-            dump(normalize_issue(issue, preferred_id=args.issue_id))
+            dump(normalize_issue(issue, preferred_id=args.issue_id, base_url=base_url))
         return
 
     if args.issue_command == "search":
@@ -748,7 +772,7 @@ async def handle_issue(args: argparse.Namespace, auth_manager: AuthManager) -> N
         )
         if result["status"] != "success":
             fail(result["message"])
-        dump([normalize_issue(issue) for issue in result["data"]])
+        dump([normalize_issue(issue, base_url=base_url) for issue in result["data"]])
         return
 
     if args.issue_command == "update":
@@ -965,11 +989,16 @@ async def main_async() -> None:
             return
         if args.command == "board":
             with activated_auth_manager(skill_dir, args.instance, require_ready=True) as (_, selection, auth_manager):
-                await handle_board(args, auth_manager, selection.label)
+                await handle_board(
+                    args,
+                    auth_manager,
+                    selection.label,
+                    base_url=base_url_for_label(selection.label),
+                )
             return
         if args.command == "issue":
-            with activated_auth_manager(skill_dir, args.instance, require_ready=True) as (_, _, auth_manager):
-                await handle_issue(args, auth_manager)
+            with activated_auth_manager(skill_dir, args.instance, require_ready=True) as (_, selection, auth_manager):
+                await handle_issue(args, auth_manager, base_url=base_url_for_label(selection.label))
             return
         fail(f"Unknown command: {args.command}")
     except InstanceRuntimeError as exc:
