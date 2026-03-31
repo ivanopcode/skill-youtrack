@@ -25,6 +25,7 @@ metadata from `locales/metadata.json` according to the selected install locale.
 - authenticate one or more YouTrack instances under explicit labels
 - store secrets per label in macOS Keychain
 - keep per-label non-secret config in `~/.config/youtrack-cli/instances/`
+- keep optional scoped board ids per label for large instances
 - pin an active instance per installed skill copy
 - inspect agile boards and current sprints
 - read board-visible issues with `web` or strict sprint membership semantics
@@ -112,6 +113,7 @@ Instead, `scripts/yt_main.py` wraps the upstream CLI and injects:
 
 - per-instance config selection
 - per-instance Keychain service selection
+- optional scoped board ids per instance
 - install-local active instance pinning
 - instance management commands
 
@@ -119,7 +121,8 @@ Instead, `scripts/yt_main.py` wraps the upstream CLI and injects:
 
 `scripts/ytx.py` provides normalized JSON-oriented reads and common mutations on
 top of the same auth/runtime context. This is the preferred interface for
-agent workflows that need predictable output.
+agent workflows that need predictable output. On large instances, it should be
+used through the scoped board surface rather than unrestricted board discovery.
 
 ## Installation
 
@@ -196,6 +199,20 @@ Authentication requires an explicit instance label:
 This stores credentials under the selected label and auto-pins that label for
 the current installed copy of the skill.
 
+On large YouTrack instances, strongly prefer setting scoped boards at login:
+
+```bash
+~/agents/skills/youtrack-cli/scripts/yt \
+  --instance primary \
+  --board-id 83-2561 \
+  --board-id agiles/195-1 \
+  auth login \
+  --base-url https://your-youtrack-host
+```
+
+This persists the preferred agile boards in the same per-instance config as the
+base URL and SSL settings.
+
 For custom CA or self-signed deployments:
 
 ```bash
@@ -241,10 +258,29 @@ Useful commands:
 ~/agents/skills/youtrack-cli/scripts/yt instances list
 ~/agents/skills/youtrack-cli/scripts/yt instances current
 ~/agents/skills/youtrack-cli/scripts/yt instances use primary
+~/agents/skills/youtrack-cli/scripts/yt instances scope set primary 83-2561 195-1
+~/agents/skills/youtrack-cli/scripts/yt instances scope clear primary
 ~/agents/skills/youtrack-cli/scripts/yt instances rename primary main
 ~/agents/skills/youtrack-cli/scripts/yt --instance primary auth status
 ~/agents/skills/youtrack-cli/scripts/yt --instance primary auth logout
 ```
+
+`instances list` and `instances current` expose `scoped_board_ids`. Agents
+should treat those ids as the default search surface for that instance.
+
+## Large Instance Routing
+
+On very large self-hosted YouTrack installations, the main failure mode is
+starting with `board list` across the whole instance and forcing the agent to
+guess which board matters.
+
+The intended narrowing strategy is:
+
+1. Read `yt instances current`
+2. If `scoped_board_ids` is non-empty, stay inside that scope
+3. Use `ytx board scoped-issues --mine` for “my current sprint tasks”
+4. Use `ytx board list --scoped` if board metadata is needed
+5. Fall back to unrestricted `ytx board list` only when there is no scope
 
 ## CLI Usage
 
@@ -263,10 +299,11 @@ Use `yt` when you want the broader upstream command surface:
 Use `ytx` when output stability matters:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board list
+~/agents/skills/youtrack-cli/scripts/ytx --instance primary board list --scoped
 ~/agents/skills/youtrack-cli/scripts/ytx --instance primary board show <board-id>
 ~/agents/skills/youtrack-cli/scripts/ytx --instance primary board sprints <board-id> --current
 ~/agents/skills/youtrack-cli/scripts/ytx --instance primary board issues <board-id> --source web
+~/agents/skills/youtrack-cli/scripts/ytx --instance primary board scoped-issues --mine
 
 ~/agents/skills/youtrack-cli/scripts/ytx --instance primary issue show <issue-id>
 ~/agents/skills/youtrack-cli/scripts/ytx --instance primary issue search "id: <issue-id>"
@@ -279,9 +316,12 @@ Use `ytx` when output stability matters:
 
 ```bash
 ~/agents/skills/youtrack-cli/scripts/ytx board issues <board-id> --mine
+~/agents/skills/youtrack-cli/scripts/ytx board scoped-issues --mine
 ```
 
-This is intended for boards that use assignee-based workflows.
+This is intended for boards that use assignee-based workflows. On large
+instances, prefer the scoped variant so the agent never starts from a full
+board crawl.
 
 ### Issue Mutations
 
@@ -315,21 +355,21 @@ Typical agent prompts should ask for the operation, not for the raw shell syntax
 Examples:
 
 - `Use $youtrack-cli to show the current sprint for board <board-id>.`
-- `Use $youtrack-cli to list my visible issues on board <board-id>.`
+- `Use $youtrack-cli to list my visible issues on the scoped boards for the current sprint.`
 - `Use $youtrack-cli to add a comment to <issue-id> and then show the updated issue.`
 - `Use $youtrack-cli to switch to instance <label> and inspect board <board-id>.`
 
 When an agent needs explicit shell commands, the preferred pattern is:
 
 ```bash
-~/.codex/skills/youtrack-cli/scripts/ytx board issues <board-id> --mine
+~/.codex/skills/youtrack-cli/scripts/ytx board scoped-issues --mine
 ~/.codex/skills/youtrack-cli/scripts/ytx issue show <issue-id>
 ```
 
 In a project-local install, the equivalent paths are:
 
 ```bash
-<repo>/.codex/skills/youtrack-cli/scripts/ytx board issues <board-id> --mine
+<repo>/.codex/skills/youtrack-cli/scripts/ytx board scoped-issues --mine
 <repo>/.codex/skills/youtrack-cli/scripts/ytx issue show <issue-id>
 ```
 

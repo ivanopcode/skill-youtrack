@@ -24,6 +24,7 @@ from instance_runtime import (
     activated_auth_manager,
     instances_current_payload,
     instances_list_payload,
+    scoped_board_ids_for_label,
     use_instance,
 )
 
@@ -435,6 +436,94 @@ def issue_matches_assignee(
     )
 
 
+def sprint_name_from_board(board: dict[str, Any], sprint_id: Optional[str]) -> Optional[str]:
+    if not sprint_id:
+        return None
+    current_sprint = board.get("currentSprint") or {}
+    if current_sprint.get("id") == sprint_id:
+        return current_sprint.get("name")
+    for sprint in board.get("sprints") or []:
+        if sprint.get("id") == sprint_id:
+            return sprint.get("name")
+    return None
+
+
+async def build_board_issues_payload(
+    service: AgileService,
+    auth_manager: AuthManager,
+    *,
+    board_id: str,
+    sprint_id: Optional[str],
+    source: str,
+    assignee: Optional[str],
+    me_from: Optional[str],
+    state: Optional[str],
+    limit: Optional[int],
+    raw: bool,
+) -> dict[str, Any]:
+    board_result = await quiet_await(service.get_board(board_id))
+    if board_result["status"] != "success":
+        fail(board_result["message"])
+    board = board_result["data"] or {}
+
+    resolved_sprint_id = sprint_id
+    if not resolved_sprint_id:
+        current_sprint = board.get("currentSprint")
+        if not current_sprint:
+            fail(f"Board {board_id} has no current sprint")
+        resolved_sprint_id = current_sprint["id"]
+
+    if source == "strict":
+        result = await quiet_await(service.get_sprint_issues(board_id, resolved_sprint_id))
+        if result["status"] != "success":
+            fail(result["message"])
+        issues = result["data"]
+        unresolved_issues_count = None
+        sprint_name = sprint_name_from_board(board, resolved_sprint_id)
+    else:
+        result = await quiet_await(service.get_sprint(board_id, resolved_sprint_id, include_issues=True))
+        if result["status"] != "success":
+            fail(result["message"])
+        sprint = result["data"] or {}
+        issues = sprint.get("issues", [])
+        unresolved_issues_count = sprint.get("unresolvedIssuesCount")
+        sprint_name = sprint.get("name") or sprint_name_from_board(board, resolved_sprint_id)
+
+    assignee_filter, assignee_resolution = await resolve_assignee_filter(
+        auth_manager,
+        assignee,
+        me_from,
+    )
+    issues = [
+        issue
+        for issue in issues
+        if issue_matches_assignee(issue, assignee_filter, assignee_resolution)
+        and issue_matches_state(issue, state)
+    ]
+    if limit is not None:
+        issues = issues[:limit]
+
+    filters = {
+        "assignee": assignee_filter,
+        "state": state,
+    }
+    if assignee_resolution:
+        filters["assignee_resolution"] = assignee_resolution
+
+    payload = {
+        "board_id": board_id,
+        "board_name": board.get("name"),
+        "sprint_id": resolved_sprint_id,
+        "sprint_name": sprint_name,
+        "source": source,
+        "unresolved_issues_count": unresolved_issues_count,
+        "filters": filters,
+        "issues": issues if raw else [normalize_issue(issue) for issue in issues],
+    }
+    payload["issue_count"] = len(payload["issues"])
+    return payload
+
+
 async def run_issue_command(
     auth_manager: AuthManager,
     manager: IssueManager,
@@ -468,14 +557,31 @@ async def run_issue_command(
     )
 
 
-async def handle_board(args: argparse.Namespace, auth_manager: AuthManager) -> None:
+async def handle_board(
+    args: argparse.Namespace,
+    auth_manager: AuthManager,
+    selection_label: str,
+) -> None:
     service = AgileService(auth_manager)
 
     if args.board_command == "list":
+        if args.scoped:
+            boards = []
+            for board_id in scoped_board_ids_for_label(selection_label):
+                result = await quiet_await(service.get_board(board_id))
+                if result["status"] != "success":
+                    fail(result["message"])
+                board = result["data"] or {}
+                output = normalize_board(board)
+                output["sprints"] = board.get("sprints", [])
+                boards.append(output)
+            dump(boards)
+            return
         result = await quiet_await(service.list_boards(project_id=args.project_id))
         if result["status"] != "success":
             fail(result["message"])
-        dump([normalize_board(board) for board in result["data"]])
+        boards = [normalize_board(board) for board in result["data"]]
+        dump(boards)
         return
 
     if args.board_command == "show":
@@ -509,73 +615,62 @@ async def handle_board(args: argparse.Namespace, auth_manager: AuthManager) -> N
         if args.mine and args.assignee:
             fail("Use either --mine or --assignee, not both")
 
-        sprint_id = args.sprint_id
-        if not sprint_id:
-            board_result = await quiet_await(service.get_board(args.board_id))
-            if board_result["status"] != "success":
-                fail(board_result["message"])
-            current_sprint = (board_result["data"] or {}).get("currentSprint")
-            if not current_sprint:
-                fail("No sprint_id provided and the board has no current sprint")
-            sprint_id = current_sprint["id"]
+        assignee_arg = "me" if args.mine else args.assignee
+        me_from_arg = args.me_from or ("git-email-localpart" if args.mine else None)
+        dump(
+            await build_board_issues_payload(
+                service,
+                auth_manager,
+                board_id=args.board_id,
+                sprint_id=args.sprint_id,
+                source=args.source,
+                assignee=assignee_arg,
+                me_from=me_from_arg,
+                state=args.state,
+                limit=args.limit,
+                raw=args.raw,
+            )
+        )
+        return
 
-        if args.source == "strict":
-            result = await quiet_await(service.get_sprint_issues(args.board_id, sprint_id))
-            if result["status"] != "success":
-                fail(result["message"])
-            issues = result["data"]
-            unresolved_issues_count = None
-        else:
-            result = await quiet_await(service.get_sprint(args.board_id, sprint_id, include_issues=True))
-            if result["status"] != "success":
-                fail(result["message"])
-            sprint = result["data"] or {}
-            issues = sprint.get("issues", [])
-            unresolved_issues_count = sprint.get("unresolvedIssuesCount")
+    if args.board_command == "scoped-issues":
+        if args.mine and args.assignee:
+            fail("Use either --mine or --assignee, not both")
+
+        scoped_board_ids = scoped_board_ids_for_label(selection_label)
+        if not scoped_board_ids:
+            fail(
+                "No scoped board ids are configured for this instance. "
+                "Re-login with '--board-id <id>' or run "
+                f"'yt instances scope set {selection_label} <board-id> [<board-id> ...]'."
+            )
 
         assignee_arg = "me" if args.mine else args.assignee
         me_from_arg = args.me_from or ("git-email-localpart" if args.mine else None)
-        assignee_filter, assignee_resolution = await resolve_assignee_filter(
-            auth_manager,
-            assignee_arg,
-            me_from_arg,
+        boards = []
+        for board_id in scoped_board_ids:
+            boards.append(
+                await build_board_issues_payload(
+                    service,
+                    auth_manager,
+                    board_id=board_id,
+                    sprint_id=None,
+                    source=args.source,
+                    assignee=assignee_arg,
+                    me_from=me_from_arg,
+                    state=args.state,
+                    limit=args.limit,
+                    raw=args.raw,
+                )
+            )
+        dump(
+            {
+                "scoped_board_ids": scoped_board_ids,
+                "source": args.source,
+                "board_count": len(boards),
+                "boards": boards,
+            }
         )
-        issues = [
-            issue
-            for issue in issues
-            if issue_matches_assignee(issue, assignee_filter, assignee_resolution)
-            and issue_matches_state(issue, args.state)
-        ]
-        if args.limit is not None:
-            issues = issues[: args.limit]
-        filters = {
-            "assignee": assignee_filter,
-            "state": args.state,
-        }
-        if assignee_resolution:
-            filters["assignee_resolution"] = assignee_resolution
-        if args.raw:
-            dump(
-                {
-                    "board_id": args.board_id,
-                    "sprint_id": sprint_id,
-                    "source": args.source,
-                    "unresolved_issues_count": unresolved_issues_count,
-                    "filters": filters,
-                    "issues": issues,
-                }
-            )
-        else:
-            dump(
-                {
-                    "board_id": args.board_id,
-                    "sprint_id": sprint_id,
-                    "source": args.source,
-                    "unresolved_issues_count": unresolved_issues_count,
-                    "filters": filters,
-                    "issues": [normalize_issue(issue) for issue in issues],
-                }
-            )
         return
 
     fail(f"Unknown board command: {args.board_command}")
@@ -744,6 +839,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     board_list = board_subparsers.add_parser("list", help="List boards")
     board_list.add_argument("--project-id")
+    board_list.add_argument(
+        "--scoped",
+        action="store_true",
+        help="Restrict results to scoped board ids configured for the selected instance",
+    )
 
     board_show = board_subparsers.add_parser("show", help="Show board details")
     board_show.add_argument("board_id")
@@ -766,6 +866,22 @@ def build_parser() -> argparse.ArgumentParser:
     board_issues.add_argument("--state", help="Exact state name, for example 'In Progress'")
     board_issues.add_argument("--limit", type=int)
     board_issues.add_argument("--raw", action="store_true")
+
+    board_scoped_issues = board_subparsers.add_parser(
+        "scoped-issues",
+        help="List current sprint issues across the scoped board ids for the selected instance",
+    )
+    board_scoped_issues.add_argument("--source", choices=["web", "strict"], default="web")
+    board_scoped_issues.add_argument("--assignee", help="Assignee full name/login or 'me'")
+    board_scoped_issues.add_argument(
+        "--mine",
+        action="store_true",
+        help="Alias for --assignee me --me-from git-email-localpart",
+    )
+    board_scoped_issues.add_argument("--me-from", choices=["git-email-localpart"])
+    board_scoped_issues.add_argument("--state", help="Exact state name, for example 'In Progress'")
+    board_scoped_issues.add_argument("--limit", type=int, help="Per-board issue limit")
+    board_scoped_issues.add_argument("--raw", action="store_true")
 
     issue = subparsers.add_parser("issue", help="Issue operations")
     issue_subparsers = issue.add_subparsers(dest="issue_command", required=True)
@@ -848,8 +964,8 @@ async def main_async() -> None:
             await handle_instances(skill_dir, args)
             return
         if args.command == "board":
-            with activated_auth_manager(skill_dir, args.instance, require_ready=True) as (_, _, auth_manager):
-                await handle_board(args, auth_manager)
+            with activated_auth_manager(skill_dir, args.instance, require_ready=True) as (_, selection, auth_manager):
+                await handle_board(args, auth_manager, selection.label)
             return
         if args.command == "issue":
             with activated_auth_manager(skill_dir, args.instance, require_ready=True) as (_, _, auth_manager):

@@ -93,6 +93,23 @@ class InstanceRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["instance"]["label"], "primary")
         self.assertEqual(ir.get_active_instance(ir.detect_install_context(skill_dir)), "primary")
 
+    def test_scoped_board_ids_roundtrip_and_instance_record(self) -> None:
+        skill_dir = self.make_global_skill_dir()
+        config_path = ir.config_path_for_label("primary")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("YOUTRACK_BASE_URL='https://prod'\n", encoding="utf-8")
+
+        board_ids = ir.set_instance_scoped_board_ids("primary", ["agiles/83-2561", "195-1", "83-2561"])
+        self.assertEqual(board_ids, ["83-2561", "195-1"])
+        self.assertEqual(ir.scoped_board_ids_for_label("primary"), ["83-2561", "195-1"])
+
+        record = ir.instance_record(skill_dir, "primary", "primary")
+        self.assertEqual(record["scoped_board_ids"], ["83-2561", "195-1"])
+        self.assertEqual(record["base_url"], "https://prod")
+
+        ir.clear_instance_scoped_board_ids("primary")
+        self.assertEqual(ir.scoped_board_ids_for_label("primary"), [])
+
     def test_rename_instance_updates_registry_configs_and_all_install_states(self) -> None:
         skill_dir = self.make_global_skill_dir()
         ir.save_registry(["primary"])

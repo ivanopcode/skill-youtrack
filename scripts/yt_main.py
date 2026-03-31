@@ -13,9 +13,11 @@ import click
 from instance_runtime import (
     InstanceRuntimeError,
     activated_keyring_service,
+    clear_instance_scoped_board_ids,
     config_path_for_label,
     delete_instance_artifacts,
     detect_install_context,
+    instance_known,
     instance_is_ready,
     instances_current_payload,
     instances_list_payload,
@@ -23,6 +25,7 @@ from instance_runtime import (
     rename_instance,
     resolve_instance_selection,
     resolve_login_instance,
+    set_instance_scoped_board_ids,
     set_active_instance,
     use_instance,
 )
@@ -32,6 +35,7 @@ from youtrack_cli.main import main as upstream_main
 @dataclass(frozen=True)
 class WrapperArgs:
     instance: Optional[str]
+    board_ids: list[str]
     no_auto_pin: bool
     forwarded: list[str]
 
@@ -59,11 +63,22 @@ def build_instances_parser() -> argparse.ArgumentParser:
     rename_parser.add_argument("source")
     rename_parser.add_argument("target")
 
+    scope_parser = subparsers.add_parser("scope", help="Manage scoped agile board ids for an instance")
+    scope_subparsers = scope_parser.add_subparsers(dest="scope_command", required=True)
+
+    scope_set = scope_subparsers.add_parser("set", help="Replace the scoped board ids for an instance")
+    scope_set.add_argument("label")
+    scope_set.add_argument("board_ids", nargs="+", help="Board ids like 83-2561 or agiles/83-2561")
+
+    scope_clear = scope_subparsers.add_parser("clear", help="Clear scoped board ids for an instance")
+    scope_clear.add_argument("label")
+
     return parser
 
 
 def parse_wrapper_args(argv: list[str]) -> WrapperArgs:
     instance: Optional[str] = None
+    board_ids: list[str] = []
     no_auto_pin = False
     forwarded: list[str] = []
 
@@ -80,6 +95,16 @@ def parse_wrapper_args(argv: list[str]) -> WrapperArgs:
             instance = arg.split("=", 1)[1]
             index += 1
             continue
+        if arg == "--board-id":
+            if index + 1 >= len(argv):
+                fail("Missing value for --board-id.")
+            board_ids.append(argv[index + 1])
+            index += 2
+            continue
+        if arg.startswith("--board-id="):
+            board_ids.append(arg.split("=", 1)[1])
+            index += 1
+            continue
         if arg == "--no-auto-pin":
             no_auto_pin = True
             index += 1
@@ -89,7 +114,7 @@ def parse_wrapper_args(argv: list[str]) -> WrapperArgs:
         forwarded.append(arg)
         index += 1
 
-    return WrapperArgs(instance=instance, no_auto_pin=no_auto_pin, forwarded=forwarded)
+    return WrapperArgs(instance=instance, board_ids=board_ids, no_auto_pin=no_auto_pin, forwarded=forwarded)
 
 
 def is_help_only(args: list[str]) -> bool:
@@ -139,6 +164,19 @@ def handle_instances_command(skill_dir: Path, args: WrapperArgs) -> None:
     if parsed.instances_command == "rename":
         print_json(rename_instance(skill_dir, parsed.source, parsed.target))
         return
+    if parsed.instances_command == "scope":
+        if parsed.scope_command == "set":
+            if not instance_known(parsed.label):
+                fail(f"Unknown YouTrack instance '{parsed.label}'.")
+            set_instance_scoped_board_ids(parsed.label, parsed.board_ids)
+            print_json(instances_current_payload(skill_dir, parsed.label))
+            return
+        if parsed.scope_command == "clear":
+            if not instance_known(parsed.label):
+                fail(f"Unknown YouTrack instance '{parsed.label}'.")
+            clear_instance_scoped_board_ids(parsed.label)
+            print_json(instances_current_payload(skill_dir, parsed.label))
+            return
 
     fail(f"Unknown instances command: {parsed.instances_command}")
 
@@ -147,6 +185,8 @@ def handle_auth_login(skill_dir: Path, args: WrapperArgs) -> None:
     selection = resolve_login_instance(skill_dir, args.instance)
     run_upstream(args.forwarded, selection_label=selection.label)
     register_instance(selection.label)
+    if args.board_ids:
+        set_instance_scoped_board_ids(selection.label, args.board_ids)
     if not args.no_auto_pin:
         set_active_instance(detect_install_context(skill_dir), selection.label)
 
@@ -159,20 +199,30 @@ def handle_auth_logout(skill_dir: Path, args: WrapperArgs) -> None:
 
 
 def handle_forwarded_command(skill_dir: Path, args: WrapperArgs) -> None:
-    if args.no_auto_pin:
-        fail("--no-auto-pin is only valid with 'yt auth login'.")
-
     if is_help_only(args.forwarded):
+        if args.no_auto_pin:
+            fail("--no-auto-pin is only valid with 'yt auth login'.")
+        if args.board_ids:
+            fail("--board-id is only valid with 'yt auth login'.")
         run_upstream(args.forwarded, selection_label=None)
         return
 
     if args.forwarded and args.forwarded[0] == "instances":
+        if args.no_auto_pin:
+            fail("--no-auto-pin is only valid with 'yt auth login'.")
+        if args.board_ids:
+            fail("--board-id is only valid with 'yt auth login'.")
         handle_instances_command(skill_dir, args)
         return
 
     if is_auth_subcommand(args.forwarded, "login"):
         handle_auth_login(skill_dir, args)
         return
+
+    if args.no_auto_pin:
+        fail("--no-auto-pin is only valid with 'yt auth login'.")
+    if args.board_ids:
+        fail("--board-id is only valid with 'yt auth login'.")
 
     if is_auth_subcommand(args.forwarded, "logout"):
         handle_auth_logout(skill_dir, args)
@@ -189,6 +239,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     if not parsed.forwarded:
         if parsed.no_auto_pin:
             fail("--no-auto-pin is only valid with 'yt auth login'.")
+        if parsed.board_ids:
+            fail("--board-id is only valid with 'yt auth login'.")
         run_upstream([], selection_label=None)
         return
 
@@ -196,6 +248,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         if parsed.forwarded[0] == "instances":
             if parsed.no_auto_pin:
                 fail("--no-auto-pin is only valid with 'yt auth login'.")
+            if parsed.board_ids:
+                fail("--board-id is only valid with 'yt auth login'.")
             handle_instances_command(skill_dir, parsed)
             return
         handle_forwarded_command(skill_dir, parsed)

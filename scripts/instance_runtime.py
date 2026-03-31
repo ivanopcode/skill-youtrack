@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,9 @@ from youtrack_cli.security import CredentialManager
 
 SERVICE_PREFIX = "youtrack-cli"
 INSTANCE_ENV_VAR = "YOUTRACK_INSTANCE"
+BOARD_SCOPE_ENV_KEY = "YOUTRACK_SCOPED_BOARD_IDS"
 LABEL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+BOARD_ID_PATTERN = re.compile(r"^\d+-\d+$")
 AUTH_ENV_KEYS = (
     "YOUTRACK_BASE_URL",
     "YOUTRACK_TOKEN",
@@ -101,6 +104,32 @@ def validate_label(label: str) -> str:
     return normalized
 
 
+def normalize_board_id(board_ref: str) -> str:
+    normalized = board_ref.strip()
+    if not normalized:
+        raise InstanceRuntimeError("Board id cannot be empty.")
+
+    normalized = normalized.lstrip("/")
+    if "agiles/" in normalized:
+        normalized = normalized.split("agiles/", 1)[1]
+        normalized = normalized.split("/", 1)[0]
+
+    if not BOARD_ID_PATTERN.fullmatch(normalized):
+        raise InstanceRuntimeError(
+            "Invalid board id. Use values like '83-2561' or 'agiles/83-2561'."
+        )
+    return normalized
+
+
+def normalize_board_ids(board_refs: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for board_ref in board_refs:
+        board_id = normalize_board_id(board_ref)
+        if board_id not in normalized:
+            normalized.append(board_id)
+    return normalized
+
+
 def config_path_for_label(label: str) -> Path:
     return instances_dir() / f"{validate_label(label)}.env"
 
@@ -156,6 +185,16 @@ def _save_json(path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _quote_env_value(value: str) -> str:
+    return shlex.quote(value)
+
+
+def _save_env(path: Path, values: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"{key}={_quote_env_value(value)}" for key, value in values.items()]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _normalize_labels(values: list[Any]) -> list[str]:
@@ -231,6 +270,41 @@ def instance_config_values(label: str) -> dict[str, str]:
     except Exception as exc:
         raise InstanceRuntimeError(f"Invalid config file: {path}") from exc
     return {key: value for key, value in values.items() if value is not None}
+
+
+def update_instance_config_values(label: str, updates: dict[str, Optional[str]]) -> dict[str, str]:
+    normalized_label = validate_label(label)
+    values = instance_config_values(normalized_label)
+    for key, value in updates.items():
+        if value is None:
+            values.pop(key, None)
+            continue
+        values[key] = value
+    _save_env(config_path_for_label(normalized_label), values)
+    return values
+
+
+def scoped_board_ids_for_label(label: str) -> list[str]:
+    raw_value = instance_config_values(label).get(BOARD_SCOPE_ENV_KEY, "")
+    if not raw_value.strip():
+        return []
+    return normalize_board_ids([item for item in raw_value.split(",") if item.strip()])
+
+
+def set_instance_scoped_board_ids(label: str, board_refs: list[str]) -> list[str]:
+    normalized_label = validate_label(label)
+    board_ids = normalize_board_ids(board_refs)
+    update_instance_config_values(
+        normalized_label,
+        {BOARD_SCOPE_ENV_KEY: ",".join(board_ids)},
+    )
+    return board_ids
+
+
+def clear_instance_scoped_board_ids(label: str) -> list[str]:
+    normalized_label = validate_label(label)
+    update_instance_config_values(normalized_label, {BOARD_SCOPE_ENV_KEY: None})
+    return []
 
 
 def instance_known(label: str) -> bool:
@@ -459,6 +533,7 @@ def instance_record(skill_dir: Path, label: str, selected_label: Optional[str] =
         "config_path": str(config_path_for_label(normalized_label)),
         "base_url": values.get("YOUTRACK_BASE_URL"),
         "username": values.get("YOUTRACK_USERNAME"),
+        "scoped_board_ids": scoped_board_ids_for_label(normalized_label),
         "has_config": config_path_for_label(normalized_label).exists(),
         "ready": instance_is_ready(normalized_label),
         "active": active_instance == normalized_label,

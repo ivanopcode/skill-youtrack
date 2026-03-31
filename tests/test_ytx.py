@@ -29,9 +29,17 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(args.command, "board")
         self.assertEqual(args.board_command, "list")
 
+        args = parser.parse_args(["--instance", "primary", "board", "list", "--scoped"])
+        self.assertTrue(args.scoped)
+
+        args = parser.parse_args(["--instance", "primary", "board", "scoped-issues", "--mine"])
+        self.assertEqual(args.board_command, "scoped-issues")
+        self.assertTrue(args.mine)
+
     def test_main_async_routes_board_commands_through_activated_auth_manager(self) -> None:
         context_manager = mock.MagicMock()
-        context_manager.__enter__.return_value = (mock.sentinel.context, mock.sentinel.selection, mock.sentinel.auth)
+        selection = mock.Mock(label="primary")
+        context_manager.__enter__.return_value = (mock.sentinel.context, selection, mock.sentinel.auth)
         context_manager.__exit__.return_value = False
 
         with mock.patch.object(sys, "argv", ["ytx.py", "--instance", "primary", "board", "list"]), \
@@ -41,6 +49,37 @@ class YtxTest(unittest.TestCase):
 
         activated_auth_manager.assert_called_once()
         handle_board.assert_awaited_once()
+
+    def test_handle_board_scoped_issues_uses_configured_scoped_boards(self) -> None:
+        args = mock.Mock(
+            board_command="scoped-issues",
+            mine=True,
+            assignee=None,
+            source="web",
+            me_from=None,
+            state=None,
+            limit=None,
+            raw=False,
+        )
+
+        with mock.patch.object(ytx, "scoped_board_ids_for_label", return_value=["83-2561", "195-1"]), \
+            mock.patch.object(
+                ytx,
+                "build_board_issues_payload",
+                new=AsyncMock(side_effect=[{"board_id": "83-2561"}, {"board_id": "195-1"}]),
+            ) as build_payload, \
+            mock.patch.object(ytx, "dump") as dump:
+            asyncio.run(ytx.handle_board(args, mock.sentinel.auth_manager, "primary"))
+
+        self.assertEqual(build_payload.await_count, 2)
+        dump.assert_called_once_with(
+            {
+                "scoped_board_ids": ["83-2561", "195-1"],
+                "source": "web",
+                "board_count": 2,
+                "boards": [{"board_id": "83-2561"}, {"board_id": "195-1"}],
+            }
+        )
 
     def test_main_async_handles_instances_use(self) -> None:
         with mock.patch.object(sys, "argv", ["ytx.py", "instances", "use", "primary"]), \

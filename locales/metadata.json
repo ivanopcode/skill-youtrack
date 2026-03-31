@@ -1,17 +1,17 @@
 {
   "locales": {
     "en": {
-      "description": "Use when working with one or more self-hosted or cloud YouTrack instances through a local CLI workflow instead of MCP. Covers named instance labels, macOS Keychain-backed auth, board and sprint inspection, issue search, comments, field updates, explicit board/sprint membership changes, and agent-facing JSON reads through the bundled `ytx` wrapper.",
+      "description": "Use when working with one or more self-hosted or cloud YouTrack instances through a local CLI workflow instead of MCP. Covers named instance labels, macOS Keychain-backed auth, optional scoped board ids for large instances, board and sprint inspection, issue search, comments, field updates, explicit board/sprint membership changes, and agent-facing JSON reads through the bundled `ytx` wrapper.",
       "display_name": "YouTrack CLI",
-      "short_description": "YouTrack CLI, instances, boards, issues",
-      "default_prompt": "Use $youtrack-cli to work with one or more named YouTrack instances through Keychain-backed CLI commands for boards, issues, comments, and sprint membership.",
+      "short_description": "YouTrack CLI, instances, scoped boards, issues",
+      "default_prompt": "Use $youtrack-cli to work with one or more named YouTrack instances through Keychain-backed CLI commands for scoped boards, current sprint tasks, issues, comments, and sprint membership.",
       "local_prefix": "[local] "
     },
     "ru": {
-      "description": "Используй, когда нужно работать с одним или несколькими self-hosted или cloud YouTrack инстансами через локальный CLI вместо MCP. Поддерживаются именованные labels инстансов, авторизация через macOS Keychain, просмотр досок и спринтов, поиск задач, комментарии, обновление полей, явное управление board/sprint membership и agent-facing JSON reads через bundled `ytx` wrapper.",
+      "description": "Используй, когда нужно работать с одним или несколькими self-hosted или cloud YouTrack инстансами через локальный CLI вместо MCP. Поддерживаются именованные labels инстансов, авторизация через macOS Keychain, optional scoped board ids для больших инстансов, просмотр досок и спринтов, поиск задач, комментарии, обновление полей, явное управление board/sprint membership и agent-facing JSON reads через bundled `ytx` wrapper.",
       "display_name": "YouTrack CLI",
-      "short_description": "YouTrack CLI, инстансы, доски, задачи",
-      "default_prompt": "Используй $youtrack-cli для работы с одним или несколькими YouTrack инстансами через CLI-команды с хранением секретов в Keychain для досок, задач, комментариев и sprint membership.",
+      "short_description": "YouTrack CLI, инстансы, scoped boards, задачи",
+      "default_prompt": "Используй $youtrack-cli для работы с одним или несколькими YouTrack инстансами через CLI-команды с хранением секретов в Keychain для scoped boards, задач текущего спринта, комментариев и sprint membership.",
       "local_prefix": "[локально] "
     }
   }
