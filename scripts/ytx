@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/common.sh"
+
+SKILL_DIR="$(cd -P -- "$SCRIPT_DIR/.." && pwd)"
+ensure_skill_venv "$SKILL_DIR"
+
+exec "$SKILL_DIR/.venv/bin/python" "$SCRIPT_DIR/ytx.py" "$@"
