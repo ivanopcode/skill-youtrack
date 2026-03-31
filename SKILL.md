@@ -1,213 +1,226 @@
 ---
 name: youtrack-cli
-description: Use when working with one or more self-hosted or cloud YouTrack instances through a local CLI workflow instead of MCP. Covers named instance labels, macOS Keychain-backed auth, optional scoped board ids for large instances, board and sprint inspection, issue search, comments, field updates, explicit board/sprint membership changes, and agent-facing JSON reads through the bundled `ytx` wrapper.
+description: Use when Codex needs to work with one or more self-hosted or cloud YouTrack instances through local CLI commands instead of MCP, including named instance labels, macOS Keychain auth, scoped boards for large instances, board and sprint reads, issue search, comments, field updates, and explicit board or sprint membership through the bundled yt and ytx wrappers.
 ---
 
 # YouTrack CLI
 
-## Overview
+## Default Mode
 
-This skill provides a portable YouTrack CLI runtime inside the skill directory.
-Use it when an agent or developer needs deterministic command-line access to YouTrack boards, sprints, issues, comments, and issue mutations without introducing an MCP server.
+- Execute the bundled commands yourself and return the result.
+- Do not answer with a shell tutorial when the skill is already installed and authentication exists.
+- Show commands only when the user explicitly asks for instructions or when setup/auth is missing.
+- Answer in the user's language unless the user explicitly asks for a different language.
+- Do not repeat an identical successful read command. Reuse the first successful result unless the context changed or the first result was incomplete.
+- Before sending the final answer, do one completeness check against the original user request. If the answer is not good enough yet, keep using tools instead of finalizing.
+- Resolve command paths from this skill file path.
+- If the skill file path is `/abs/path/to/SKILL.md`, then:
+  - `<yt-command>` is `/abs/path/to/scripts/yt`
+  - `<ytx-command>` is `/abs/path/to/scripts/ytx`
+- Use those absolute command paths for every command in this skill.
+- Do not run `scripts/yt` or `scripts/ytx` as paths relative to the current working directory.
+- Do not use a bare `yt` from `PATH`.
 
-The skill bundles two entrypoints:
+## Resolve Context First
 
-- `scripts/yt` for the upstream `youtrack-cli` project by Ryan Cheley
-- `scripts/ytx` for agent-facing JSON operations layered on top of the same credentials
-
-Both wrappers resolve paths relative to the skill location, so they work from any current directory and do not depend on a user-specific `pipx` path.
-They share the same multi-instance runtime:
-
-- named `instance` labels such as `primary` or `staging`
-- one Keychain service per label
-- one config file per label in `~/.config/youtrack-cli/instances/`
-- optional scoped board ids per label to narrow large YouTrack instances
-- one pinned active instance per installed skill copy
-
-## When To Use
-
-Use this skill when you need one or more of the following:
-
-- inspect agile boards, current sprints, and board-visible issues
-- search, view, comment on, or update YouTrack issues
-- add or remove issues from explicit board/sprint membership
-- resolve the current developer from local git config and map that identity to a YouTrack user
-- keep authentication in macOS Keychain instead of shell history, env files, or repo config
-- work against a few known agile boards instead of crawling an entire large instance
-- switch cleanly between multiple YouTrack instances without overwriting credentials
-
-Do not use this skill when the user explicitly wants an MCP integration instead of a local CLI workflow.
-
-## Quick Start
-
-1. Install the skill into your agent environments:
+Always begin with these two commands in this order:
 
 ```bash
-~/agents/skills/youtrack-cli/setup.sh global --locale en
+<yt-command> instances list
+<yt-command> instances current
 ```
 
-For a single repository instead of your home-level agent config:
+Use the result to choose the instance context:
+
+- If the user names a label and it exists, use `--instance <label>` for this turn.
+- If `instances current` already points at the correct label, prefer commands without `--instance`.
+- If several labels exist and there is no active instance, ask which label to use.
+- If no labels exist, stop and ask the user to log in first.
+
+In all commands below:
+
+- `<label>` is a real label from `<yt-command> instances list`
+- `<board-id>` is a real agile board id
+- `<issue-id>` is a real issue id
+
+## Fast Path: My Tasks
+
+For prompts like:
+
+- "какие мои задачи"
+- "мои задачи на доске"
+- "what are my tasks this sprint"
+
+use this order:
+
+1. Run `<yt-command> instances list`
+2. Run `<yt-command> instances current`
+3. If the user asks about current sprint or "my tasks" without naming a board, and the selected instance has `scoped_board_ids`, run:
 
 ```bash
-~/agents/skills/youtrack-cli/setup.sh local /abs/path/to/repo --locale ru
+<ytx-command> board scoped-issues --mine
 ```
 
-`global` creates a managed install copy outside the source repo and links `~/.claude/skills/youtrack-cli` and `~/.codex/skills/youtrack-cli` to that managed copy.
-
-`local` copies the skill into `<repo>/.skills/youtrack-cli`, removes any nested git metadata from that copy, and then points `<repo>/.claude/skills/youtrack-cli` and `<repo>/.codex/skills/youtrack-cli` at the copied version. That makes the skill part of the project repo instead of a symlink to your home directory.
-
-The source skill stays English. Installed copies render `description` and other user-facing metadata from `locales/metadata.json` for the selected locale mode. Supported locale modes are `en`, `ru`, `en-ru`, and `ru-en`.
-
-2. Authenticate with YouTrack. Login now requires an explicit label. On large instances, also set scoped board ids during login:
+4. If the user asked about a specific board, use board-specific reads for the final answer. When the selected instance has scoped boards, identify the board inside that scope first:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/yt \
-  --instance primary \
-  --board-id 83-2561 \
-  --board-id agiles/195-1 \
+<ytx-command> board list --scoped
+<ytx-command> board issues <board-id> --mine --source web
+```
+
+5. Only if there is no scope, broaden to:
+
+```bash
+<ytx-command> board list
+```
+
+Return the actual tasks. Do not ask the user to run these commands unless the skill is not installed or auth is missing.
+
+If the selected instance has exactly one scoped board and the user refers to "the board" loosely, treat that single scoped board as the target board.
+
+## Scope Rules For Large Instances
+
+- If `scoped_board_ids` is configured for the selected instance, treat that scope as the default search surface.
+- Do not start with unrestricted `<ytx-command> board list` on large instances.
+- Prefer `<ytx-command> board scoped-issues --mine` for developer-focused reads.
+- Prefer `<ytx-command> board list --scoped` before any full-instance board enumeration.
+
+## Board Reads
+
+Use `<ytx-command>` for agent-facing reads:
+
+```bash
+<ytx-command> board list --scoped
+<ytx-command> board show <board-id>
+<ytx-command> board sprints <board-id> --current
+<ytx-command> board issues <board-id> --source web
+<ytx-command> board scoped-issues --mine
+```
+
+Rules:
+
+- Prefer `--source web` when the user asks what is visible on the board.
+- Use the strict sprint endpoint only when the user explicitly asks about sprint membership.
+- Use `--mine` when the request is about the current developer.
+- For a board-specific question, prefer `<ytx-command> board issues <board-id> --mine --source web` over `<ytx-command> board scoped-issues --mine` for the final answer.
+
+## Issue Reads
+
+```bash
+<ytx-command> issue show <issue-id>
+<ytx-command> issue search 'id: <issue-id>'
+<ytx-command> issue comment-list <issue-id>
+```
+
+## Mutations
+
+Use the wrappers directly for common writes:
+
+```bash
+<ytx-command> issue update <issue-id> --state 'In Progress'
+<ytx-command> issue update <issue-id> --custom-field 'Field Name=Value'
+<ytx-command> issue comment-add <issue-id> 'Comment text'
+<ytx-command> issue board-add <issue-id> --board '<board-name>' --current-sprint
+<ytx-command> issue board-remove <issue-id> --board '<board-name>' --sprint '<sprint-name>'
+<ytx-command> issue command <issue-id> 'add tag important' --dry-run
+```
+
+Rules:
+
+- Prefer `--dry-run` before raw command mutations when the effect is not obvious.
+- For board membership on explicit boards, use `board-add` and `board-remove` instead of guessing field updates.
+
+## Current Developer Resolution
+
+`--mine` resolves the current developer from `git config user.email`, falls back to global git config, takes the localpart before `@`, and searches YouTrack users with that value.
+
+If the match is ambiguous, `ytx` fails with candidate users. In that case, ask the user which account to use.
+
+## Ask Only If Blocked
+
+Ask the user only when one of these is true:
+
+- no YouTrack instances are configured
+- the requested label does not exist
+- several labels exist and there is no active instance
+- no scoped board matches the request and the target board cannot be identified
+- a write target is missing or ambiguous
+
+Otherwise, run the commands and return the result.
+
+## Output Contract
+
+When answering a read query, return the result itself, not a command recipe.
+
+For task lists on a board or sprint:
+
+- include board name
+- include sprint name when available
+- include total matching issue count
+- list every matching issue id, summary, state, and type
+- do not omit `Done` issues unless the user explicitly asks for only active or unresolved work
+- write the final answer in the user's language
+
+For a single issue:
+
+- include id, summary, state, type, priority, assignee, and the main description
+
+## Pre-final Check
+
+Before sending the final answer:
+
+1. Draft the answer from the tool results you already have.
+2. Compare that draft against the original user request.
+3. Ask these questions:
+   - Does the draft answer the user's actual question directly?
+   - If the user named a specific instance, board, sprint, or issue, does the answer refer to that exact target?
+   - Does the answer satisfy the output contract for this query type?
+   - Is the answer still telling the user to run commands even though the skill and auth are already available?
+4. If any answer is "no", continue with the next needed tool call instead of finalizing.
+5. If all answers are "yes", send that draft as the final answer.
+
+Do this once per response. Do not loop on repeated self-checks after you already have a good direct answer.
+
+## Setup Fallback
+
+Use this only when installation or authentication is missing.
+
+Install globally:
+
+```bash
+setup.sh global --locale <locale>
+```
+
+Install into one repository:
+
+```bash
+setup.sh local /abs/path/to/repo --locale <locale>
+```
+
+Log in with an explicit label and optional scoped boards:
+
+```bash
+<yt-command> \
+  --instance <label> \
+  --board-id <board-id> \
+  --board-id <board-id> \
   auth login \
   --base-url https://your-youtrack-host
 ```
 
-This stores the token in macOS Keychain under the selected label, persists the scoped board ids in the per-instance config, and auto-pins that label for the current install.
-
-3. Inspect and pin instances:
+Pin the active instance:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/yt instances list
-~/agents/skills/youtrack-cli/scripts/yt instances current
-~/agents/skills/youtrack-cli/scripts/yt instances use primary
-~/agents/skills/youtrack-cli/scripts/yt instances scope set primary 83-2561 195-1
-```
-
-4. Use `yt` for raw CLI coverage and `ytx` for stable JSON reads and common mutations:
-
-```bash
-~/agents/skills/youtrack-cli/scripts/yt boards list
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board scoped-issues --mine
-```
-
-For self-signed or custom CA deployments, pass the same SSL options supported by `youtrack-cli`, for example:
-
-```bash
-~/agents/skills/youtrack-cli/scripts/yt --instance primary auth login --base-url https://your-youtrack-host --cert-file /path/to/cert.pem
-~/agents/skills/youtrack-cli/scripts/yt --instance primary auth login --base-url https://your-youtrack-host --ca-bundle /path/to/ca-bundle.pem
-~/agents/skills/youtrack-cli/scripts/yt --instance primary auth login --base-url https://your-youtrack-host --no-verify-ssl
-```
-
-## Runtime Layout
-
-- `setup.sh global` creates a managed install copy under `${XDG_DATA_HOME:-~/.local/share}/agents/skills/youtrack-cli`, bootstraps that copy, renders localized metadata, and links `~/.claude/skills` and `~/.codex/skills` to it
-- `setup.sh local <repo>` copies the skill into `<repo>/.skills/youtrack-cli`, strips git metadata from that copy, bootstraps the copied runtime, renders localized metadata, and then links the project's `.claude/skills` and `.codex/skills` to the copied skill
-- `scripts/bootstrap.sh` creates `.venv/` inside the installed skill and installs the pinned dependencies from `scripts/requirements.txt`
-- `scripts/yt` is a Python-aware wrapper around the upstream MIT-licensed `youtrack-cli` package and injects the selected instance config/keychain context
-- `scripts/ytx` runs the bundled Python helper from that environment
-- `scripts/ytx.py` is the agent-facing wrapper implementation
-- `locales/metadata.json` is the source of truth for installed localized metadata
-- per-instance config files live in `~/.config/youtrack-cli/instances/<label>.env`
-- per-install pin state lives in `~/.config/youtrack-cli/installs/<install-id>.json`
-- optional scoped board ids live in the same per-instance config file under `YOUTRACK_SCOPED_BOARD_IDS`
-
-The wrappers auto-bootstrap if the environment is missing, but `setup.sh` is the preferred first step because it both prepares the runtime and links the skill into the selected agent environments.
-Local installs still keep their pinned instance state outside the repo; only the skill code is copied into `<repo>/.skills/youtrack-cli`. Local install locale is project-fixed after the first install. Global install locale may be changed on a later rerun.
-
-## Multi-instance Rules
-
-- `yt auth login` requires `--instance <label>`
-- repeated `--board-id <id>` on `yt auth login` stores a preferred board scope for that instance
-- default resolution for commands is: `--instance` > `YOUTRACK_INSTANCE` > pinned active instance for this install > the only registered instance
-- use `yt instances use <label>` to pin a default for the current install
-- use `yt instances scope set <label> <board-id> [<board-id> ...]` to update scoped boards later without re-auth
-- use `yt instances scope clear <label>` to remove the scope
-- use `YOUTRACK_INSTANCE=<label>` for one shell or one agent run without changing the pin
-- use `--no-auto-pin` with `yt --instance <label> auth login` if login should not change the current pin
-- legacy single-account `~/.config/youtrack-cli/.env` is intentionally ignored; re-login under an explicit label if you were using the old setup
-
-## Large Instances
-
-When a selected instance has `scoped_board_ids`, treat that as the default search surface.
-Do not start with `ytx board list` across the whole instance unless there is no scope configured or the user explicitly asks for a broad search.
-
-Preferred route for prompts like “what are my tasks this sprint?”:
-
-1. Run `yt instances current`
-2. If `instance.scoped_board_ids` is non-empty, use `ytx board scoped-issues --mine`
-3. If needed, inspect only the scoped boards with `ytx board list --scoped`
-4. Fall back to unrestricted `ytx board list` only when no scope exists
-
-## Core Workflows
-
-### Read Boards And Sprint Issues
-
-Use `ytx` for JSON-friendly reads:
-
-```bash
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board list --scoped
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board show <board-id>
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board sprints <board-id> --current
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board issues <board-id> --source web
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board scoped-issues --mine
-```
-
-Default board issue source is `web`, because some explicit/manual agile boards show issue cards in the UI that are not returned by the strict sprint membership endpoint. Read [`references/board-membership.md`](references/board-membership.md) when a board appears inconsistent.
-
-### Filter To The Current Developer
-
-Use `--mine` for board queries:
-
-```bash
-~/agents/skills/youtrack-cli/scripts/ytx board issues <board-id> --mine
-~/agents/skills/youtrack-cli/scripts/ytx board scoped-issues --mine
-```
-
-`--mine` resolves the current developer from `git config user.email`, falls back to the global git config, takes the localpart before `@`, and searches YouTrack users with that value. If the match is ambiguous, `ytx` fails with the candidate list instead of guessing.
-
-### Inspect And Mutate Issues
-
-```bash
-~/agents/skills/youtrack-cli/scripts/ytx issue show <issue-id>
-~/agents/skills/youtrack-cli/scripts/ytx issue search 'id: <issue-id>'
-~/agents/skills/youtrack-cli/scripts/ytx issue comment-list <issue-id>
-~/agents/skills/youtrack-cli/scripts/ytx issue comment-add <issue-id> 'Текст комментария'
-~/agents/skills/youtrack-cli/scripts/ytx issue update <issue-id> --state 'In Progress'
-~/agents/skills/youtrack-cli/scripts/ytx issue update <issue-id> --custom-field 'Field Name=Value'
-```
-
-For unsupported or project-specific commands, use the raw command interface:
-
-```bash
-~/agents/skills/youtrack-cli/scripts/ytx issue command <issue-id> 'add tag important'
-```
-
-Use `--dry-run` before risky command mutations:
-
-```bash
-~/agents/skills/youtrack-cli/scripts/ytx issue command <issue-id> 'add Board <board-name> <sprint-name>' --dry-run
-```
-
-### Manage Board Membership Explicitly
-
-For boards with explicit sprint membership, use:
-
-```bash
-~/agents/skills/youtrack-cli/scripts/ytx issue board-add <issue-id> --board '<board-name>' --current-sprint
-~/agents/skills/youtrack-cli/scripts/ytx issue board-remove <issue-id> --board '<board-name>' --sprint '<sprint-name>'
-```
-
-This compiles down to a YouTrack command such as:
-
-```text
-add Board <board-name> <sprint-name>
+<yt-command> instances use <label>
 ```
 
 ## Safety Rules
 
-- Keep tokens in macOS Keychain via `yt auth login`; do not save them in shell history or checked-in files.
-- Always choose an explicit label on first login, for example `primary` or `staging`.
-- On large instances, always configure one or more scoped board ids and keep agents inside that scope by default.
-- Prefer `ytx` for reads consumed by agents because it emits compact JSON.
-- Prefer `--dry-run` before raw command mutations when the effect is not obvious.
-- When a board UI and the strict sprint endpoint disagree, trust `ytx board issues --source web` for "what the user currently sees on the board", and use the strict endpoint only when you specifically need sprint membership.
+- Keep tokens in macOS Keychain through `<yt-command> auth login`.
+- Do not save tokens in shell history, env files, or checked-in files.
+- Use an explicit label for each instance.
+- On large instances, keep agents inside scoped boards by default.
+- Prefer `<ytx-command>` for reads consumed by agents because it emits stable JSON.
 
 ## References
 
