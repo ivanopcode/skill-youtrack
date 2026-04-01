@@ -1,9 +1,9 @@
 ---
-name: youtrack-cli
+name: skill-youtrack
 description: Use when Codex needs to work with one or more self-hosted or cloud YouTrack instances through local CLI commands instead of MCP, including named instance labels, macOS Keychain auth, scoped boards for large instances, board and sprint reads, issue search, comments, field updates, and explicit board or sprint membership through the bundled yt and ytx wrappers.
 ---
 
-# YouTrack CLI
+# skill-youtrack
 
 ## Default Mode
 
@@ -58,23 +58,23 @@ use this order:
 
 1. Run `<yt-command> instances list`
 2. Run `<yt-command> instances current`
-3. If the user asks about current sprint or "my tasks" without naming a board, and the selected instance has `scoped_board_ids`, run:
+3. Prefer the high-level board read first:
 
 ```bash
-<ytx-command> board scoped-issues --mine
+<ytx-command> board my-tasks
 ```
 
-4. If the user asked about a specific board, use board-specific reads for the final answer. When the selected instance has scoped boards, identify the board inside that scope first:
+4. If the user named a specific board, prefer:
 
 ```bash
+<ytx-command> board my-tasks --board <board-id>
+```
+
+5. Only if the high-level command cannot identify the board context yet, inspect the board context directly:
+
+```bash
+<ytx-command> board current
 <ytx-command> board list --scoped
-<ytx-command> board issues <board-id> --mine --source web
-```
-
-5. Only if there is no scope, broaden to:
-
-```bash
-<ytx-command> board list
 ```
 
 Return the actual tasks. Do not ask the user to run these commands unless the skill is not installed or auth is missing.
@@ -85,7 +85,7 @@ If the selected instance has exactly one scoped board and the user refers to "th
 
 - If `scoped_board_ids` is configured for the selected instance, treat that scope as the default search surface.
 - Do not start with unrestricted `<ytx-command> board list` on large instances.
-- Prefer `<ytx-command> board scoped-issues --mine` for developer-focused reads.
+- Prefer `<ytx-command> board current`, `<ytx-command> board my-tasks`, and `<ytx-command> board tasks` before lower-level reads.
 - Prefer `<ytx-command> board list --scoped` before any full-instance board enumeration.
 
 ## Board Reads
@@ -93,6 +93,10 @@ If the selected instance has exactly one scoped board and the user refers to "th
 Use `<ytx-command>` for agent-facing reads:
 
 ```bash
+<ytx-command> board current
+<ytx-command> board my-tasks
+<ytx-command> board tasks --assignee <user>
+<ytx-command> board tasks --initiator <user>
 <ytx-command> board list --scoped
 <ytx-command> board show <board-id>
 <ytx-command> board sprints <board-id> --current
@@ -104,12 +108,16 @@ Rules:
 
 - Prefer `--source web` when the user asks what is visible on the board.
 - Use the strict sprint endpoint only when the user explicitly asks about sprint membership.
-- Use `--mine` when the request is about the current developer.
-- For a board-specific question, prefer `<ytx-command> board issues <board-id> --mine --source web` over `<ytx-command> board scoped-issues --mine` for the final answer.
+- Use `<ytx-command> board my-tasks` as the default direct answer for the current developer.
+- Use `<ytx-command> board tasks --assignee ...` when the user asks for tasks assigned to someone else.
+- Use `<ytx-command> board tasks --initiator ...` when the user asks who initiated the tasks.
+- `assignee` and `initiator` are different filters. Do not treat them as interchangeable.
+- Use `<ytx-command> board issues ...` and `<ytx-command> board scoped-issues ...` as lower-level inspection tools, not as the default final read path.
 
 ## Issue Reads
 
 ```bash
+<ytx-command> issue brief <issue-id>
 <ytx-command> issue show <issue-id>
 <ytx-command> issue search 'id: <issue-id>'
 <ytx-command> issue comment-list <issue-id>
@@ -117,9 +125,14 @@ Rules:
 
 ## Mutations
 
-Use the wrappers directly for common writes:
+Use the high-level `ytx` write surface for board workflows:
 
 ```bash
+<ytx-command> board create-task --summary 'Task summary'
+<ytx-command> board create-subtask --parent <issue-id> --summary 'Task summary'
+<ytx-command> issue create --project <project-id> --summary 'Task summary'
+<ytx-command> issue create-subtask --parent <issue-id> --summary 'Task summary'
+<ytx-command> issue link --source <issue-id> --target <issue-id> --type 'Subtask'
 <ytx-command> issue update <issue-id> --state 'In Progress'
 <ytx-command> issue update <issue-id> --custom-field 'Field Name=Value'
 <ytx-command> issue comment-add <issue-id> 'Comment text'
@@ -130,8 +143,17 @@ Use the wrappers directly for common writes:
 
 Rules:
 
+- For board workflows, prefer `ytx` over upstream `yt issues create`.
+- Do not fall back to `jq`, `grep`, `python -c`, raw keychain reads, or ad-hoc REST calls if the `ytx` surface can do the job.
+- New high-level non-destructive writes are preview-first:
+  - run the command without `--apply`
+  - inspect the preview
+  - if it matches the user's request, run the same command again with `--apply`
+  - do both steps yourself in the same turn
+- Do not ask the user to perform the second `--apply` step manually unless the preview revealed ambiguity or risk that needs clarification.
 - Prefer `--dry-run` before raw command mutations when the effect is not obvious.
 - For board membership on explicit boards, use `board-add` and `board-remove` instead of guessing field updates.
+- Destructive operations still require explicit user intent.
 
 ## Current Developer Resolution
 
@@ -170,6 +192,7 @@ For task lists on a board or sprint:
 For a single issue:
 
 - include id, summary, state, type, priority, assignee, and the main description
+- prefer `<ytx-command> issue brief <issue-id>` unless the user explicitly asks for the full raw issue
 - include a dedicated `Link:` line near the top when the tool payload provides a full issue URL
 - localize fixed labels like `Link:` to the user's language
 

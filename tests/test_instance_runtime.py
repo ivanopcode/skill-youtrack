@@ -32,12 +32,12 @@ class InstanceRuntimeTest(unittest.TestCase):
         self.addCleanup(self.env_patcher.stop)
 
     def make_global_skill_dir(self) -> Path:
-        skill_dir = self.root / "agents" / "skills" / "youtrack-cli"
+        skill_dir = self.root / "agents" / "skills" / "skill-youtrack"
         skill_dir.mkdir(parents=True, exist_ok=True)
         return skill_dir
 
     def make_local_skill_dir(self) -> Path:
-        skill_dir = self.root / "repo" / ".skills" / "youtrack-cli"
+        skill_dir = self.root / "repo" / ".skills" / "skill-youtrack"
         skill_dir.mkdir(parents=True, exist_ok=True)
         return skill_dir
 

@@ -6,8 +6,10 @@ import asyncio
 import io
 import json
 import logging
+import re
 import subprocess
 import sys
+from collections import defaultdict
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Optional
@@ -16,8 +18,11 @@ logging.disable(logging.CRITICAL)
 
 from youtrack_cli.auth import AuthManager
 from youtrack_cli.custom_field_manager import CustomFieldManager
+from youtrack_cli.custom_field_types import CustomFieldValueTypes, IssueCustomFieldTypes
 from youtrack_cli.managers.issues import IssueManager
 from youtrack_cli.services.base import BaseService
+from youtrack_cli.services.issues import IssueService
+from youtrack_cli.services.projects import ProjectService
 
 from instance_runtime import (
     InstanceRuntimeError,
@@ -32,7 +37,7 @@ from instance_runtime import (
 
 class AgileService(BaseService):
     ISSUE_FIELDS = (
-        "id,idReadable,summary,description,created,updated,"
+        "id,idReadable,summary,description,created,updated,resolved,"
         "project(id,name),"
         "assignee(id,login,name,fullName),"
         "customFields(name,value(id,login,name,fullName,text,presentation))"
@@ -43,7 +48,7 @@ class AgileService(BaseService):
             "$top": 2000,
             "fields": (
                 "id,name,"
-                "projects(id,name),"
+                "projects(id,name,shortName),"
                 "owner(id,login,name,fullName),"
                 "currentSprint(id,name,start,finish)"
             ),
@@ -57,7 +62,7 @@ class AgileService(BaseService):
         params = {
             "fields": (
                 "id,name,"
-                "projects(id,name),"
+                "projects(id,name,shortName),"
                 "owner(id,login,name,fullName),"
                 "currentSprint(id,name,start,finish),"
                 "sprints(id,name,start,finish,isDefault),"
@@ -154,6 +159,43 @@ class UserService(BaseService):
         return await self._handle_response(response)
 
 
+class WorkflowIssueService(BaseService):
+    async def create_issue(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._make_request("POST", "issues", json_data=payload)
+        return await self._handle_response(response, success_codes=[200, 201])
+
+    async def update_issue(self, issue_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self._make_request("POST", f"issues/{issue_id}", json_data=payload)
+        return await self._handle_response(response, success_codes=[200, 204])
+
+
+PROJECT_LOOKUP_FIELDS = "id,shortName,name"
+PROJECT_FIELD_LIST_FIELDS = "id,canBeEmpty,emptyFieldText,$type,field(name,fieldType,$type)"
+ISSUE_BRIEF_FIELDS = (
+    "id,idReadable,summary,description,created,updated,resolved,"
+    "project(id,name,shortName),"
+    "assignee(id,login,name,fullName),"
+    "links(direction,linkType(id,name,directed,sourceToTarget,targetToSource),issues(id,idReadable,summary)),"
+    "customFields(name,value(id,login,name,fullName,text,presentation))"
+)
+SINGLE_VALUE_FIELD_TYPES = {
+    IssueCustomFieldTypes.SINGLE_ENUM,
+    IssueCustomFieldTypes.STATE,
+    IssueCustomFieldTypes.SINGLE_USER,
+    IssueCustomFieldTypes.SINGLE_VERSION,
+    IssueCustomFieldTypes.TEXT,
+    IssueCustomFieldTypes.PERIOD,
+    IssueCustomFieldTypes.INTEGER,
+}
+MULTI_VALUE_FIELD_TYPES = {
+    IssueCustomFieldTypes.MULTI_ENUM,
+    IssueCustomFieldTypes.MULTI_USER,
+    IssueCustomFieldTypes.MULTI_VERSION,
+}
+COMMAND_DRY_RUN_HINT = "Run without --apply for preview, then rerun with --apply to mutate."
+INTERNAL_ID_PATTERN = re.compile(r"^\d+-\d+$")
+
+
 def dump(data: Any) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
@@ -206,6 +248,12 @@ def build_issue_url(base_url: Optional[str], issue_id: Optional[str]) -> Optiona
     return f"{base_url.rstrip('/')}/issue/{issue_id}"
 
 
+def build_board_url(base_url: Optional[str], board_id: Optional[str]) -> Optional[str]:
+    if not base_url or not board_id:
+        return None
+    return f"{base_url.rstrip('/')}/agiles/{board_id}/current"
+
+
 def normalize_issue(
     issue: dict[str, Any],
     preferred_id: Optional[str] = None,
@@ -232,6 +280,8 @@ def normalize_issue(
             assignee.get("login"),
             extract_custom_field(issue, "Assignee"),
         ),
+        "initiator": extract_custom_field(issue, "Initiator"),
+        "resolved": issue.get("resolved"),
         "created": issue.get("created"),
         "updated": issue.get("updated"),
         "custom_fields": normalized_custom_fields,
@@ -242,13 +292,43 @@ def normalize_issue(
     return normalized
 
 
-def normalize_board(board: dict[str, Any]) -> dict[str, Any]:
+def normalize_issue_link(link: dict[str, Any], base_url: Optional[str] = None) -> dict[str, Any]:
+    link_type = link.get("linkType") or {}
+    issues = []
+    for linked_issue in link.get("issues", []):
+        issue_id = first_non_empty(linked_issue.get("idReadable"), linked_issue.get("id"))
+        normalized_issue = {
+            "id": issue_id,
+            "summary": linked_issue.get("summary"),
+        }
+        issue_url = build_issue_url(base_url, issue_id)
+        if issue_url:
+            normalized_issue["url"] = issue_url
+        issues.append(normalized_issue)
+    return {
+        "type": link_type.get("name"),
+        "direction": link.get("direction"),
+        "source_to_target": link_type.get("sourceToTarget"),
+        "target_to_source": link_type.get("targetToSource"),
+        "issues": issues,
+    }
+
+
+def normalize_board(board: dict[str, Any], base_url: Optional[str] = None) -> dict[str, Any]:
     current_sprint = board.get("currentSprint") or {}
     sprints = board.get("sprints") or []
-    return {
+    normalized = {
         "id": board.get("id"),
         "name": board.get("name"),
         "projects": [project.get("name") for project in board.get("projects", [])],
+        "project_refs": [
+            {
+                "id": project.get("id"),
+                "name": project.get("name"),
+                "shortName": project.get("shortName"),
+            }
+            for project in board.get("projects", [])
+        ],
         "owner": first_non_empty(
             (board.get("owner") or {}).get("fullName"),
             (board.get("owner") or {}).get("name"),
@@ -262,6 +342,10 @@ def normalize_board(board: dict[str, Any]) -> dict[str, Any]:
         "sprint_count": len(sprints),
         "sprints_disabled": (board.get("sprintsSettings") or {}).get("disableSprints"),
     }
+    board_url = build_board_url(base_url, board.get("id"))
+    if board_url:
+        normalized["url"] = board_url
+    return normalized
 
 
 def normalize_comment(comment: dict[str, Any]) -> dict[str, Any]:
@@ -334,18 +418,18 @@ def read_git_email(cwd: Optional[str] = None) -> str:
     fail("Could not resolve git user.email from local or global git config")
 
 
-async def resolve_assignee_filter(
-    auth_manager: AuthManager,
-    assignee: Optional[str],
-    me_from: Optional[str],
-) -> tuple[Optional[str], Optional[dict[str, Any]]]:
-    if not assignee:
-        return None, None
-    if assignee != "me":
-        return assignee, None
+def normalize_user_candidate(user: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": user.get("id"),
+        "login": user.get("login"),
+        "fullName": user.get("fullName"),
+        "email": user.get("email"),
+    }
 
+
+async def resolve_me_user(auth_manager: AuthManager, me_from: Optional[str]) -> tuple[dict[str, Any], dict[str, Any]]:
     if me_from != "git-email-localpart":
-        fail("When --assignee me is used, specify --me-from git-email-localpart")
+        fail("When 'me' is used, specify --me-from git-email-localpart")
 
     git_email = read_git_email()
     localpart = email_localpart(git_email)
@@ -358,58 +442,111 @@ async def resolve_assignee_filter(
         fail(result["message"])
     users = result["data"] or []
 
-    exact_login = [user for user in users if casefold_equals(user.get("login"), localpart)]
-    if len(exact_login) == 1:
-        return exact_login[0]["login"], {
-            "source": "git-email-localpart",
-            "git_email": git_email,
-            "git_localpart": localpart,
-            "user": exact_login[0],
-        }
+    for matcher in (
+        lambda user: casefold_equals(user.get("login"), localpart),
+        lambda user: casefold_equals(email_localpart(user.get("email")), localpart),
+        lambda user: (user.get("login") or "").casefold().startswith(f"{localpart.casefold()}."),
+    ):
+        matches = [user for user in users if matcher(user)]
+        if len(matches) == 1:
+            return matches[0], {
+                "source": "git-email-localpart",
+                "git_email": git_email,
+                "git_localpart": localpart,
+                "user": normalize_user_candidate(matches[0]),
+            }
 
-    exact_email_localpart = [
-        user for user in users if casefold_equals(email_localpart(user.get("email")), localpart)
-    ]
-    if len(exact_email_localpart) == 1:
-        return exact_email_localpart[0]["login"], {
-            "source": "git-email-localpart",
-            "git_email": git_email,
-            "git_localpart": localpart,
-            "user": exact_email_localpart[0],
-        }
-
-    dotted_prefix_login = [
-        user
-        for user in users
-        if (user.get("login") or "").casefold().startswith(f"{localpart.casefold()}.")
-    ]
-    if len(dotted_prefix_login) == 1:
-        return dotted_prefix_login[0]["login"], {
-            "source": "git-email-localpart",
-            "git_email": git_email,
-            "git_localpart": localpart,
-            "user": dotted_prefix_login[0],
-        }
-
-    candidates = [
-        {
-            "login": user.get("login"),
-            "fullName": user.get("fullName"),
-            "email": user.get("email"),
-        }
-        for user in users
-    ]
     fail(
         "Could not uniquely resolve YouTrack user from git user.email localpart: "
         + json.dumps(
             {
                 "git_email": git_email,
                 "git_localpart": localpart,
-                "candidates": candidates,
+                "candidates": [normalize_user_candidate(user) for user in users],
             },
             ensure_ascii=False,
         )
     )
+
+
+async def resolve_user_reference(
+    auth_manager: AuthManager,
+    user_ref: str,
+    *,
+    allow_me: bool = False,
+    me_from: Optional[str] = None,
+) -> tuple[str, dict[str, Any]]:
+    normalized_ref = (user_ref or "").strip()
+    if not normalized_ref:
+        fail("User reference cannot be empty")
+
+    if normalized_ref == "me":
+        if not allow_me:
+            fail("'me' is not supported for this option")
+        user, resolution = await resolve_me_user(auth_manager, me_from)
+        return user["login"], resolution
+
+    service = UserService(auth_manager)
+    result = await quiet_await(service.find_users(normalized_ref))
+    if result["status"] != "success":
+        fail(result["message"])
+    users = result["data"] or []
+
+    def exact_match(user: dict[str, Any]) -> bool:
+        return any(
+            casefold_equals(candidate, normalized_ref)
+            for candidate in [
+                user.get("login"),
+                user.get("fullName"),
+                user.get("name"),
+                user.get("email"),
+                email_localpart(user.get("email")),
+            ]
+        )
+
+    matches = [user for user in users if exact_match(user)]
+    if len(matches) == 1:
+        return matches[0]["login"], {
+            "source": "user-search",
+            "query": normalized_ref,
+            "user": normalize_user_candidate(matches[0]),
+        }
+
+    if len(users) == 1 and users[0].get("login"):
+        return users[0]["login"], {
+            "source": "user-search",
+            "query": normalized_ref,
+            "user": normalize_user_candidate(users[0]),
+        }
+
+    fail(
+        "Could not uniquely resolve YouTrack user reference: "
+        + json.dumps(
+            {
+                "query": normalized_ref,
+                "candidates": [normalize_user_candidate(user) for user in users],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+async def resolve_assignee_filter(
+    auth_manager: AuthManager,
+    assignee: Optional[str],
+    me_from: Optional[str],
+) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+    if not assignee:
+        return None, None
+    if assignee != "me":
+        return assignee, None
+    login, resolution = await resolve_user_reference(
+        auth_manager,
+        "me",
+        allow_me=True,
+        me_from=me_from,
+    )
+    return login, resolution
 
 
 def issue_matches_state(issue: dict[str, Any], state_filter: Optional[str]) -> bool:
@@ -452,6 +589,19 @@ def issue_matches_assignee(
     )
 
 
+def issue_matches_initiator(issue: dict[str, Any], initiator_filter: Optional[str]) -> bool:
+    if not initiator_filter:
+        return True
+    initiator = extract_custom_field(issue, "Initiator")
+    return casefold_equals(initiator, initiator_filter)
+
+
+def issue_matches_active(issue: dict[str, Any], active_only: bool) -> bool:
+    if not active_only:
+        return True
+    return issue.get("resolved") in (None, "")
+
+
 def sprint_name_from_board(board: dict[str, Any], sprint_id: Optional[str]) -> Optional[str]:
     if not sprint_id:
         return None
@@ -462,6 +612,89 @@ def sprint_name_from_board(board: dict[str, Any], sprint_id: Optional[str]) -> O
         if sprint.get("id") == sprint_id:
             return sprint.get("name")
     return None
+
+
+async def fetch_board(service: AgileService, board_id: str) -> dict[str, Any]:
+    result = await quiet_await(service.get_board(board_id))
+    if result["status"] != "success":
+        fail(result["message"])
+    return result["data"] or {}
+
+
+async def load_scoped_boards(service: AgileService, selection_label: str) -> tuple[list[str], list[dict[str, Any]]]:
+    scoped_ids = scoped_board_ids_for_label(selection_label)
+    boards = []
+    for board_id in scoped_ids:
+        boards.append(await fetch_board(service, board_id))
+    return scoped_ids, boards
+
+
+def find_board_match(boards: list[dict[str, Any]], board_ref: str) -> Optional[dict[str, Any]]:
+    exact_matches = [
+        board
+        for board in boards
+        if board.get("id") == board_ref or board.get("name") == board_ref
+    ]
+    if exact_matches:
+        return exact_matches[0]
+
+    ref_casefold = board_ref.casefold()
+    for board in boards:
+        if (board.get("name") or "").casefold() == ref_casefold:
+            return board
+    return None
+
+
+async def resolve_target_board(
+    service: AgileService,
+    selection_label: str,
+    board_ref: Optional[str],
+) -> tuple[dict[str, Any], list[str]]:
+    scoped_ids, scoped_boards = await load_scoped_boards(service, selection_label)
+    if board_ref:
+        if scoped_ids:
+            board = find_board_match(scoped_boards, board_ref)
+            if not board:
+                fail(
+                    f"Board '{board_ref}' is not in the scoped boards for instance '{selection_label}'."
+                )
+            return board, scoped_ids
+        board = await resolve_board(service, board_ref)
+        return await fetch_board(service, board["id"]), scoped_ids
+
+    if len(scoped_boards) == 1:
+        return scoped_boards[0], scoped_ids
+    if len(scoped_boards) > 1:
+        fail(
+            "Multiple scoped boards are configured for this instance. "
+            "Specify --board <id-or-name>."
+        )
+    fail(
+        "No board specified and no scoped boards are configured for this instance. "
+        "Pass --board <id-or-name> or configure scoped boards."
+    )
+
+
+def infer_project_ref_from_board(board: dict[str, Any]) -> Optional[str]:
+    projects = board.get("projects") or []
+    if len(projects) != 1:
+        return None
+    project = projects[0] or {}
+    return first_non_empty(project.get("shortName"), project.get("id"), project.get("name"))
+
+
+async def resolve_project_context(
+    auth_manager: AuthManager,
+    project_ref: str,
+) -> dict[str, Any]:
+    service = ProjectService(auth_manager)
+    result = await quiet_await(service.get_project(project_ref, fields=PROJECT_LOOKUP_FIELDS))
+    if result["status"] != "success":
+        fail(result["message"])
+    project = result["data"] or {}
+    if not project.get("id"):
+        fail(f"Could not resolve project: {project_ref}")
+    return project
 
 
 async def build_board_issues_payload(
@@ -537,7 +770,91 @@ async def build_board_issues_payload(
         "filters": filters,
         "issues": issues if raw else [normalize_issue(issue, base_url=base_url) for issue in issues],
     }
+    board_url = build_board_url(base_url, board_id)
+    if board_url:
+        payload["board_url"] = board_url
     payload["issue_count"] = len(payload["issues"])
+    return payload
+
+
+async def build_board_tasks_payload(
+    service: AgileService,
+    auth_manager: AuthManager,
+    *,
+    selection_label: str,
+    board_ref: Optional[str],
+    source: str,
+    assignee: Optional[str],
+    me_from: Optional[str],
+    initiator: Optional[str],
+    state: Optional[str],
+    active_only: bool,
+    limit: Optional[int],
+    base_url: Optional[str],
+) -> dict[str, Any]:
+    board, scoped_ids = await resolve_target_board(service, selection_label, board_ref)
+    payload = await build_board_issues_payload(
+        service,
+        auth_manager,
+        board_id=board["id"],
+        sprint_id=None,
+        source=source,
+        assignee=assignee,
+        me_from=me_from,
+        state=state,
+        limit=None,
+        raw=True,
+        base_url=base_url,
+    )
+
+    issues = payload["issues"]
+    issues = [
+        issue
+        for issue in issues
+        if issue_matches_initiator(issue, initiator)
+        and issue_matches_active(issue, active_only)
+    ]
+    if limit is not None:
+        issues = issues[:limit]
+
+    assignee_filter = payload.get("filters", {}).get("assignee")
+    output = {
+        "board_id": board.get("id"),
+        "board_name": board.get("name"),
+        "sprint_id": payload.get("sprint_id"),
+        "sprint_name": payload.get("sprint_name"),
+        "source": source,
+        "filters": {
+            "assignee": assignee_filter,
+            "initiator": initiator,
+            "state": state,
+            "active_only": active_only,
+        },
+        "issues": [normalize_issue(issue, base_url=base_url) for issue in issues],
+    }
+    if scoped_ids:
+        output["scoped_board_ids"] = scoped_ids
+    board_url = build_board_url(base_url, board.get("id"))
+    if board_url:
+        output["board_url"] = board_url
+    assignee_resolution = payload.get("filters", {}).get("assignee_resolution")
+    if assignee_resolution:
+        output["filters"]["assignee_resolution"] = assignee_resolution
+    output["issue_count"] = len(output["issues"])
+    return output
+
+
+async def build_issue_brief_payload(
+    issue_service: IssueService,
+    issue_id: str,
+    base_url: Optional[str],
+) -> dict[str, Any]:
+    result = await quiet_await(issue_service.get_issue(issue_id, fields=ISSUE_BRIEF_FIELDS))
+    if result["status"] != "success":
+        fail(result["message"])
+    issue = result["data"] or {}
+    payload = normalize_issue(issue, preferred_id=issue_id, base_url=base_url)
+    payload["links"] = [normalize_issue_link(link, base_url=base_url) for link in issue.get("links", [])]
     return payload
 
 
@@ -549,29 +866,266 @@ async def run_issue_command(
     dry_run: bool = False,
     comment: Optional[str] = None,
 ) -> None:
-    issue = await get_issue_data(manager, issue_id)
-    issue_db_id = issue.get("id")
-    if not issue_db_id:
-        fail(f"Could not resolve database id for issue {issue_id}")
+    dump(
+        await execute_issue_command(
+            auth_manager=auth_manager,
+            manager=manager,
+            issue_id=issue_id,
+            query=query,
+            dry_run=dry_run,
+            comment=comment,
+        )
+    )
 
-    service = CommandService(auth_manager)
-    if dry_run:
-        result = await quiet_await(service.assist([issue_db_id], query))
-    else:
-        result = await quiet_await(service.apply([issue_db_id], query, comment=comment))
 
+async def prepare_issue_create_operation(
+    auth_manager: AuthManager,
+    *,
+    selection_label: str,
+    summary: str,
+    description: Optional[str],
+    project_ref: Optional[str],
+    board_ref: Optional[str],
+    use_current_sprint: bool,
+    parent_issue_id: Optional[str],
+    type_name: Optional[str],
+    priority: Optional[str],
+    assignee: Optional[str],
+    mine: bool,
+    me_from: Optional[str],
+    raw_fields: list[str],
+) -> dict[str, Any]:
+    board_service = AgileService(auth_manager)
+    board = None
+    sprint_name = None
+    scoped_board_ids: list[str] = []
+    if board_ref or use_current_sprint:
+        board, scoped_board_ids = await resolve_target_board(board_service, selection_label, board_ref)
+        if use_current_sprint:
+            current_sprint = board.get("currentSprint") or {}
+            if not current_sprint.get("name"):
+                fail(f"Board {board.get('name') or board.get('id')} has no current sprint")
+            sprint_name = current_sprint["name"]
+
+    effective_project_ref = project_ref
+    if not effective_project_ref and board:
+        effective_project_ref = infer_project_ref_from_board(board)
+        if not effective_project_ref:
+            fail(
+                "The selected board is attached to multiple projects. "
+                "Specify --project explicitly."
+            )
+    if not effective_project_ref:
+        fail("Missing project. Use --project or provide --board for a single-project board.")
+
+    project = await resolve_project_context(auth_manager, effective_project_ref)
+
+    if mine and assignee:
+        fail("Use either --mine or --assignee, not both")
+
+    resolved_assignee = None
+    if mine:
+        resolved_assignee, _ = await resolve_user_reference(
+            auth_manager,
+            "me",
+            allow_me=True,
+            me_from=me_from or "git-email-localpart",
+        )
+    elif assignee:
+        resolved_assignee, _ = await resolve_user_reference(auth_manager, assignee)
+
+    field_assignments = parse_field_assignments(raw_fields)
+    add_single_field_assignment(field_assignments, "Type", type_name, "--type")
+    add_single_field_assignment(field_assignments, "Priority", priority, "--priority")
+    add_single_field_assignment(field_assignments, "Assignee", resolved_assignee, "--assignee/--mine")
+
+    project_lookup_ref = first_non_empty(project.get("shortName"), project.get("id"))
+    custom_field_payloads, field_previews = await build_project_field_payloads(
+        auth_manager,
+        project_lookup_ref,
+        field_assignments,
+    )
+
+    issue_payload: dict[str, Any] = {
+        "project": {"id": project["id"]},
+        "summary": summary,
+    }
+    if description:
+        issue_payload["description"] = description
+    if custom_field_payloads:
+        issue_payload["customFields"] = custom_field_payloads
+
+    preview = build_issue_mutation_preview(
+        operation="create-subtask" if parent_issue_id else "create-issue",
+        summary=summary,
+        description=description,
+        project={
+            "id": project.get("id"),
+            "shortName": project.get("shortName"),
+            "name": project.get("name"),
+        },
+        parent_issue_id=parent_issue_id,
+        board=board,
+        sprint_name=sprint_name,
+        field_previews=field_previews,
+        dry_run=True,
+    )
+    if scoped_board_ids:
+        preview["target"]["scoped_board_ids"] = scoped_board_ids
+    preview["hint"] = COMMAND_DRY_RUN_HINT
+
+    return {
+        "project": project,
+        "board": board,
+        "sprint_name": sprint_name,
+        "parent_issue_id": parent_issue_id,
+        "issue_payload": issue_payload,
+        "preview": preview,
+    }
+
+
+async def apply_issue_create_operation(
+    auth_manager: AuthManager,
+    prepared: dict[str, Any],
+    *,
+    base_url: Optional[str],
+) -> dict[str, Any]:
+    workflow_service = WorkflowIssueService(auth_manager)
+    issue_service = IssueService(auth_manager)
+    issue_manager = IssueManager(auth_manager)
+
+    create_result = await quiet_await(workflow_service.create_issue(prepared["issue_payload"]))
+    if create_result["status"] != "success":
+        fail(create_result["message"])
+    created = create_result["data"] or {}
+    created_id = first_non_empty(created.get("idReadable"), created.get("id"))
+    if not created_id:
+        fail("Created issue did not include an id")
+
+    created_issue = await build_issue_brief_payload(issue_service, created_id, base_url)
+    applied_actions = [{"type": "create_issue", "issue_id": created_issue["id"]}]
+
+    if prepared.get("parent_issue_id"):
+        link_result = await quiet_await(
+            issue_service.create_link(
+                created_issue["id"],
+                prepared["parent_issue_id"],
+                "Subtask",
+            )
+        )
+        if link_result["status"] != "success":
+            return {
+                "status": "partial_success",
+                "dry_run": False,
+                "operation": "create-subtask",
+                "created_issue": created_issue,
+                "applied_actions": applied_actions,
+                "failed_action": {
+                    "type": "link_issue",
+                    "link_type": "Subtask",
+                    "target_issue_id": prepared["parent_issue_id"],
+                    "message": link_result["message"],
+                },
+                "warnings": [],
+            }
+        applied_actions.append(
+            {
+                "type": "link_issue",
+                "link_type": "Subtask",
+                "target_issue_id": prepared["parent_issue_id"],
+            }
+        )
+
+    board = prepared.get("board")
+    if board:
+        query = build_board_command("add", board["name"], prepared.get("sprint_name"))
+        board_add_result = await execute_issue_command(
+            auth_manager,
+            issue_manager,
+            created_issue["id"],
+            query,
+            dry_run=False,
+            raise_on_error=False,
+        )
+        if board_add_result["status"] != "success":
+            return {
+                "status": "partial_success",
+                "dry_run": False,
+                "operation": "create-subtask" if prepared.get("parent_issue_id") else "create-issue",
+                "created_issue": created_issue,
+                "applied_actions": applied_actions,
+                "failed_action": {
+                    "type": "board_add",
+                    "board_id": board.get("id"),
+                    "board_name": board.get("name"),
+                    "sprint_name": prepared.get("sprint_name"),
+                    "message": board_add_result["message"],
+                },
+                "warnings": [],
+            }
+        applied_actions.append(
+            {
+                "type": "board_add",
+                "board_id": board.get("id"),
+                "board_name": board.get("name"),
+                "sprint_name": prepared.get("sprint_name"),
+            }
+        )
+
+    return {
+        "status": "success",
+        "dry_run": False,
+        "operation": "create-subtask" if prepared.get("parent_issue_id") else "create-issue",
+        "created_issue": created_issue,
+        "applied_actions": applied_actions,
+        "warnings": [],
+    }
+
+
+async def preview_or_apply_issue_link(
+    auth_manager: AuthManager,
+    *,
+    source_issue_id: str,
+    target_issue_id: str,
+    link_type: str,
+    apply: bool,
+) -> dict[str, Any]:
+    if not apply:
+        return {
+            "status": "success",
+            "dry_run": True,
+            "operation": "link-issue",
+            "planned_actions": [
+                {
+                    "type": "link_issue",
+                    "source_issue_id": source_issue_id,
+                    "target_issue_id": target_issue_id,
+                    "link_type": link_type,
+                }
+            ],
+            "warnings": [],
+            "validation_errors": [],
+            "hint": COMMAND_DRY_RUN_HINT,
+        }
+
+    service = IssueService(auth_manager)
+    result = await quiet_await(service.create_link(source_issue_id, target_issue_id, link_type))
     if result["status"] != "success":
         fail(result["message"])
-
-    dump(
-        {
-            "status": "success",
-            "issue_id": first_non_empty(issue.get("idReadable"), issue_id),
-            "dry_run": dry_run,
-            "query": query,
-            "result": result["data"],
-        }
-    )
+    return {
+        "status": "success",
+        "dry_run": False,
+        "operation": "link-issue",
+        "applied_actions": [
+            {
+                "type": "link_issue",
+                "source_issue_id": source_issue_id,
+                "target_issue_id": target_issue_id,
+                "link_type": link_type,
+            }
+        ],
+        "warnings": [],
+    }
 
 
 async def handle_board(
@@ -582,15 +1136,20 @@ async def handle_board(
 ) -> None:
     service = AgileService(auth_manager)
 
+    if args.board_command == "current":
+        board, scoped_ids = await resolve_target_board(service, selection_label, args.board)
+        output = normalize_board(board, base_url=base_url)
+        if scoped_ids:
+            output["scoped_board_ids"] = scoped_ids
+        dump(output)
+        return
+
     if args.board_command == "list":
         if args.scoped:
+            _, scoped_boards = await load_scoped_boards(service, selection_label)
             boards = []
-            for board_id in scoped_board_ids_for_label(selection_label):
-                result = await quiet_await(service.get_board(board_id))
-                if result["status"] != "success":
-                    fail(result["message"])
-                board = result["data"] or {}
-                output = normalize_board(board)
+            for board in scoped_boards:
+                output = normalize_board(board, base_url=base_url)
                 output["sprints"] = board.get("sprints", [])
                 boards.append(output)
             dump(boards)
@@ -598,7 +1157,7 @@ async def handle_board(
         result = await quiet_await(service.list_boards(project_id=args.project_id))
         if result["status"] != "success":
             fail(result["message"])
-        boards = [normalize_board(board) for board in result["data"]]
+        boards = [normalize_board(board, base_url=base_url) for board in result["data"]]
         dump(boards)
         return
 
@@ -607,7 +1166,7 @@ async def handle_board(
         if result["status"] != "success":
             fail(result["message"])
         board = result["data"]
-        output = normalize_board(board)
+        output = normalize_board(board, base_url=base_url)
         output["sprints"] = board.get("sprints", [])
         dump(output)
         return
@@ -627,6 +1186,36 @@ async def handle_board(
         if result["status"] != "success":
             fail(result["message"])
         dump(result["data"])
+        return
+
+    if args.board_command in {"tasks", "my-tasks"}:
+        if args.board_command == "my-tasks":
+            if getattr(args, "assignee", None) or getattr(args, "initiator", None):
+                fail("board my-tasks does not accept --assignee or --initiator")
+            assignee_arg = "me"
+            me_from_arg = "git-email-localpart"
+        else:
+            if args.mine and args.assignee:
+                fail("Use either --mine or --assignee, not both")
+            assignee_arg = "me" if args.mine else args.assignee
+            me_from_arg = args.me_from or ("git-email-localpart" if args.mine else None)
+
+        dump(
+            await build_board_tasks_payload(
+                service,
+                auth_manager,
+                selection_label=selection_label,
+                board_ref=args.board,
+                source=args.source,
+                assignee=assignee_arg,
+                me_from=me_from_arg,
+                initiator=getattr(args, "initiator", None),
+                state=args.state,
+                active_only=args.active_only,
+                limit=args.limit,
+                base_url=base_url,
+            )
+        )
         return
 
     if args.board_command == "issues":
@@ -693,6 +1282,29 @@ async def handle_board(
         )
         return
 
+    if args.board_command in {"create-task", "create-subtask"}:
+        prepared = await prepare_issue_create_operation(
+            auth_manager,
+            selection_label=selection_label,
+            summary=args.summary,
+            description=args.description,
+            project_ref=args.project,
+            board_ref=args.board,
+            use_current_sprint=args.current_sprint,
+            parent_issue_id=getattr(args, "parent_issue_id", None),
+            type_name=args.type,
+            priority=args.priority,
+            assignee=args.assignee,
+            mine=args.mine,
+            me_from=args.me_from,
+            raw_fields=args.field or [],
+        )
+        if not args.apply:
+            dump(prepared["preview"])
+            return
+        dump(await apply_issue_create_operation(auth_manager, prepared, base_url=base_url))
+        return
+
     fail(f"Unknown board command: {args.board_command}")
 
 
@@ -706,13 +1318,348 @@ def parse_custom_fields(values: list[str]) -> dict[str, str]:
     return result
 
 
+def parse_field_assignments(values: list[str]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = defaultdict(list)
+    for item in values:
+        if "=" not in item:
+            fail(f"Invalid field format: {item}. Expected Name=Value")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            fail(f"Invalid field format: {item}. Field name cannot be empty")
+        result[key].append(value)
+    return dict(result)
+
+
+def add_single_field_assignment(
+    assignments: dict[str, list[str]],
+    field_name: str,
+    value: Optional[str],
+    option_name: str,
+) -> None:
+    if value is None:
+        return
+    if field_name in assignments:
+        fail(f"Use either {option_name} or --field '{field_name}=...', not both")
+    assignments[field_name] = [value]
+
+
+def normalized_issue_field_type(field_info: dict[str, Any]) -> str:
+    project_field_type = field_info.get("project_field_type") or (field_info.get("field_details") or {}).get("$type") or ""
+    if "MultiEnumProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.MULTI_ENUM
+    if "EnumProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.SINGLE_ENUM
+    if "StateProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.STATE
+    if "MultiUserProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.MULTI_USER
+    if "UserProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.SINGLE_USER
+    if "MultiVersionProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.MULTI_VERSION
+    if "VersionProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.SINGLE_VERSION
+    if "TextProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.TEXT
+    if "PeriodProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.PERIOD
+    if "SimpleProjectCustomField" in project_field_type:
+        return IssueCustomFieldTypes.INTEGER
+
+    issue_field_type = field_info.get("issue_field_type")
+    if issue_field_type in {
+        IssueCustomFieldTypes.SINGLE_ENUM,
+        IssueCustomFieldTypes.MULTI_ENUM,
+        IssueCustomFieldTypes.STATE,
+        IssueCustomFieldTypes.SINGLE_USER,
+        IssueCustomFieldTypes.MULTI_USER,
+        IssueCustomFieldTypes.SINGLE_VERSION,
+        IssueCustomFieldTypes.MULTI_VERSION,
+        IssueCustomFieldTypes.TEXT,
+        IssueCustomFieldTypes.PERIOD,
+        IssueCustomFieldTypes.INTEGER,
+    }:
+        return issue_field_type
+
+    return IssueCustomFieldTypes.SINGLE_ENUM
+
+
+def bundle_value_type(field_info: dict[str, Any]) -> Optional[str]:
+    bundle_element_type = field_info.get("bundle_element_type")
+    if bundle_element_type:
+        return bundle_element_type
+
+    issue_field_type = normalized_issue_field_type(field_info)
+    if issue_field_type in {IssueCustomFieldTypes.SINGLE_ENUM, IssueCustomFieldTypes.MULTI_ENUM}:
+        return CustomFieldValueTypes.ENUM_BUNDLE_ELEMENT
+    if issue_field_type == IssueCustomFieldTypes.STATE:
+        return CustomFieldValueTypes.STATE_BUNDLE_ELEMENT
+    if issue_field_type in {IssueCustomFieldTypes.SINGLE_VERSION, IssueCustomFieldTypes.MULTI_VERSION}:
+        return CustomFieldValueTypes.VERSION_BUNDLE_ELEMENT
+    return None
+
+
+def build_typed_field_payload(
+    field_info: dict[str, Any],
+    values: list[str],
+) -> dict[str, Any]:
+    issue_field_type = normalized_issue_field_type(field_info)
+    field_name = field_info.get("field_name")
+    if not field_name:
+        fail(f"Missing field name in field info: {field_info}")
+
+    if issue_field_type in SINGLE_VALUE_FIELD_TYPES and len(values) > 1:
+        fail(f"Field '{field_name}' accepts a single value")
+
+    if issue_field_type == IssueCustomFieldTypes.TEXT:
+        return {
+            "$type": IssueCustomFieldTypes.TEXT,
+            "name": field_name,
+            "value": {"$type": CustomFieldValueTypes.TEXT_VALUE, "text": values[0]},
+        }
+
+    if issue_field_type == IssueCustomFieldTypes.PERIOD:
+        return {
+            "$type": IssueCustomFieldTypes.PERIOD,
+            "name": field_name,
+            "value": {"$type": CustomFieldValueTypes.PERIOD_VALUE, "presentation": values[0]},
+        }
+
+    if issue_field_type == IssueCustomFieldTypes.INTEGER:
+        try:
+            numeric_value: Any = int(values[0]) if values[0].isdigit() else float(values[0])
+        except (TypeError, ValueError):
+            numeric_value = values[0]
+        return {
+            "$type": IssueCustomFieldTypes.INTEGER,
+            "name": field_name,
+            "value": numeric_value,
+        }
+
+    if issue_field_type == IssueCustomFieldTypes.SINGLE_USER:
+        return {
+            "$type": IssueCustomFieldTypes.SINGLE_USER,
+            "name": field_name,
+            "value": {"$type": CustomFieldValueTypes.USER, "login": values[0]},
+        }
+
+    if issue_field_type == IssueCustomFieldTypes.MULTI_USER:
+        return {
+            "$type": IssueCustomFieldTypes.MULTI_USER,
+            "name": field_name,
+            "value": [{"$type": CustomFieldValueTypes.USER, "login": value} for value in values],
+        }
+
+    bundle_type = bundle_value_type(field_info)
+    if issue_field_type in {
+        IssueCustomFieldTypes.SINGLE_ENUM,
+        IssueCustomFieldTypes.STATE,
+        IssueCustomFieldTypes.SINGLE_VERSION,
+    }:
+        return {
+            "$type": issue_field_type,
+            "name": field_name,
+            "value": {"$type": bundle_type, "name": values[0]},
+        }
+
+    if issue_field_type in {
+        IssueCustomFieldTypes.MULTI_ENUM,
+        IssueCustomFieldTypes.MULTI_VERSION,
+    }:
+        return {
+            "$type": issue_field_type,
+            "name": field_name,
+            "value": [{"$type": bundle_type, "name": value} for value in values],
+        }
+
+    fail(
+        f"Unsupported custom field type for '{field_name}': "
+        f"{issue_field_type or field_info.get('project_field_type') or 'unknown'}"
+    )
+
+
+def preview_field_value(field_payload: dict[str, Any]) -> Any:
+    value = field_payload.get("value")
+    if isinstance(value, list):
+        return [item.get("login") or item.get("name") or item.get("presentation") for item in value]
+    if isinstance(value, dict):
+        return first_non_empty(value.get("login"), value.get("name"), value.get("presentation"), value.get("text"))
+    return value
+
+
+async def build_project_field_payloads(
+    auth_manager: AuthManager,
+    project_ref: str,
+    field_assignments: dict[str, list[str]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not field_assignments:
+        return [], []
+
+    service = ProjectService(auth_manager)
+    payloads: list[dict[str, Any]] = []
+    previews: list[dict[str, Any]] = []
+
+    for field_name, values in field_assignments.items():
+        result = await quiet_await(service.discover_custom_field(project_ref, field_name))
+        if result["status"] != "success":
+            fail(result["message"])
+        field_info = result["data"] or {}
+        payload = build_typed_field_payload(field_info, values)
+        payloads.append(payload)
+        previews.append(
+            {
+                "name": payload["name"],
+                "type": payload["$type"],
+                "value": preview_field_value(payload),
+                "required": not (field_info.get("field_details") or {}).get("canBeEmpty", True),
+            }
+        )
+
+    return payloads, previews
+
+
+def build_issue_mutation_preview(
+    *,
+    operation: str,
+    summary: Optional[str] = None,
+    description: Optional[str] = None,
+    project: Optional[dict[str, Any]] = None,
+    parent_issue_id: Optional[str] = None,
+    board: Optional[dict[str, Any]] = None,
+    sprint_name: Optional[str] = None,
+    field_previews: list[dict[str, Any]],
+    dry_run: bool,
+) -> dict[str, Any]:
+    planned_actions = [{"type": "create_issue"}]
+    if parent_issue_id:
+        planned_actions.append({"type": "link_issue", "link_type": "Subtask", "target_issue_id": parent_issue_id})
+    if board:
+        planned_actions.append(
+            {
+                "type": "board_add",
+                "board_id": board.get("id"),
+                "board_name": board.get("name"),
+                "sprint_name": sprint_name,
+            }
+        )
+
+    return {
+        "status": "success",
+        "dry_run": dry_run,
+        "operation": operation,
+        "target": {
+            "project": project,
+            "board": (
+                {
+                    "id": board.get("id"),
+                    "name": board.get("name"),
+                }
+                if board
+                else None
+            ),
+            "parent_issue_id": parent_issue_id,
+        },
+        "issue": {
+            "summary": summary,
+            "description": description,
+            "fields": field_previews,
+        },
+        "planned_actions": planned_actions,
+        "warnings": [],
+        "validation_errors": [],
+    }
+
+
+async def execute_issue_command(
+    auth_manager: AuthManager,
+    manager: IssueManager,
+    issue_id: str,
+    query: str,
+    dry_run: bool = False,
+    comment: Optional[str] = None,
+    raise_on_error: bool = True,
+) -> dict[str, Any]:
+    issue = await get_issue_data(manager, issue_id)
+    issue_db_id = issue.get("id")
+    if not issue_db_id:
+        fail(f"Could not resolve database id for issue {issue_id}")
+
+    service = CommandService(auth_manager)
+    if dry_run:
+        result = await quiet_await(service.assist([issue_db_id], query))
+    else:
+        result = await quiet_await(service.apply([issue_db_id], query, comment=comment))
+
+    if result["status"] != "success":
+        if raise_on_error:
+            fail(result["message"])
+        return {
+            "status": "error",
+            "issue_id": first_non_empty(issue.get("idReadable"), issue_id),
+            "dry_run": dry_run,
+            "query": query,
+            "message": result["message"],
+            "result": result.get("data"),
+        }
+
+    return {
+        "status": "success",
+        "issue_id": first_non_empty(issue.get("idReadable"), issue_id),
+        "dry_run": dry_run,
+        "query": query,
+        "result": result["data"],
+    }
+
+
 async def handle_issue(
     args: argparse.Namespace,
     auth_manager: AuthManager,
+    selection_label: str = "",
     base_url: Optional[str] = None,
 ) -> None:
     manager = IssueManager(auth_manager)
     board_service = AgileService(auth_manager)
+    issue_service = IssueService(auth_manager)
+
+    if args.issue_command == "brief":
+        dump(await build_issue_brief_payload(issue_service, args.issue_id, base_url))
+        return
+
+    if args.issue_command in {"create", "create-subtask"}:
+        prepared = await prepare_issue_create_operation(
+            auth_manager,
+            selection_label=selection_label,
+            summary=args.summary,
+            description=args.description,
+            project_ref=args.project,
+            board_ref=args.board,
+            use_current_sprint=args.current_sprint,
+            parent_issue_id=args.parent_issue_id if args.issue_command == "create-subtask" else None,
+            type_name=args.type,
+            priority=args.priority,
+            assignee=args.assignee,
+            mine=args.mine,
+            me_from=args.me_from,
+            raw_fields=args.field or [],
+        )
+        if not args.apply:
+            dump(prepared["preview"])
+            return
+        dump(await apply_issue_create_operation(auth_manager, prepared, base_url=base_url))
+        return
+
+    if args.issue_command == "link":
+        dump(
+            await preview_or_apply_issue_link(
+                auth_manager,
+                source_issue_id=args.source_issue_id,
+                target_issue_id=args.target_issue_id,
+                link_type=args.link_type,
+                apply=args.apply,
+            )
+        )
+        return
 
     if args.issue_command == "command":
         await run_issue_command(
@@ -869,6 +1816,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict results to scoped board ids configured for the selected instance",
     )
 
+    board_current = board_subparsers.add_parser(
+        "current",
+        help="Show the active board context for the selected instance or explicit board",
+    )
+    board_current.add_argument("--board", help="Board id or exact board name")
+
     board_show = board_subparsers.add_parser("show", help="Show board details")
     board_show.add_argument("board_id")
 
@@ -907,12 +1860,118 @@ def build_parser() -> argparse.ArgumentParser:
     board_scoped_issues.add_argument("--limit", type=int, help="Per-board issue limit")
     board_scoped_issues.add_argument("--raw", action="store_true")
 
+    board_tasks = board_subparsers.add_parser(
+        "tasks",
+        help="List tasks on the current sprint of a selected board",
+    )
+    board_tasks.add_argument("--board", help="Board id or exact board name")
+    board_tasks.add_argument("--source", choices=["web", "strict"], default="web")
+    board_tasks.add_argument("--assignee", help="Assignee full name/login or 'me'")
+    board_tasks.add_argument("--mine", action="store_true")
+    board_tasks.add_argument("--me-from", choices=["git-email-localpart"])
+    board_tasks.add_argument("--initiator", help="Exact initiator full name/login")
+    board_tasks.add_argument("--state", help="Exact state name")
+    board_tasks.add_argument("--active-only", action="store_true")
+    board_tasks.add_argument("--limit", type=int)
+
+    board_my_tasks = board_subparsers.add_parser(
+        "my-tasks",
+        help="List current sprint tasks assigned to the current developer",
+    )
+    board_my_tasks.add_argument("--board", help="Board id or exact board name")
+    board_my_tasks.add_argument("--source", choices=["web", "strict"], default="web")
+    board_my_tasks.add_argument("--active-only", action="store_true")
+    board_my_tasks.add_argument("--state", help="Exact state name")
+    board_my_tasks.add_argument("--limit", type=int)
+
+    board_create_task = board_subparsers.add_parser(
+        "create-task",
+        help="Create a task in a board/project context",
+    )
+    board_create_task.add_argument("--board", help="Board id or exact board name")
+    board_create_task.add_argument("--project")
+    board_create_task.add_argument("--summary", required=True)
+    board_create_task.add_argument("--description")
+    board_create_task.add_argument("--type")
+    board_create_task.add_argument("--priority")
+    board_create_task.add_argument("--assignee")
+    board_create_task.add_argument("--mine", action="store_true")
+    board_create_task.add_argument("--me-from", choices=["git-email-localpart"], default="git-email-localpart")
+    board_create_task.add_argument("--field", action="append")
+    board_create_task.add_argument("--current-sprint", action="store_true")
+    board_create_task.add_argument("--apply", action="store_true")
+
+    board_create_subtask = board_subparsers.add_parser(
+        "create-subtask",
+        help="Create a subtask in a board/project context",
+    )
+    board_create_subtask.add_argument("--board", help="Board id or exact board name")
+    board_create_subtask.add_argument("--project")
+    board_create_subtask.add_argument("--parent-issue-id", "--parent", dest="parent_issue_id", required=True)
+    board_create_subtask.add_argument("--summary", required=True)
+    board_create_subtask.add_argument("--description")
+    board_create_subtask.add_argument("--type")
+    board_create_subtask.add_argument("--priority")
+    board_create_subtask.add_argument("--assignee")
+    board_create_subtask.add_argument("--mine", action="store_true")
+    board_create_subtask.add_argument("--me-from", choices=["git-email-localpart"], default="git-email-localpart")
+    board_create_subtask.add_argument("--field", action="append")
+    board_create_subtask.add_argument("--current-sprint", action="store_true")
+    board_create_subtask.add_argument("--apply", action="store_true")
+
     issue = subparsers.add_parser("issue", help="Issue operations")
     issue_subparsers = issue.add_subparsers(dest="issue_command", required=True)
+
+    issue_brief = issue_subparsers.add_parser("brief", help="Show a compact issue summary")
+    issue_brief.add_argument("issue_id")
 
     issue_show = issue_subparsers.add_parser("show", help="Show issue details")
     issue_show.add_argument("issue_id")
     issue_show.add_argument("--raw", action="store_true")
+
+    issue_create = issue_subparsers.add_parser(
+        "create",
+        help="Create an issue with preview-first semantics",
+    )
+    issue_create.add_argument("--project")
+    issue_create.add_argument("--summary", required=True)
+    issue_create.add_argument("--description")
+    issue_create.add_argument("--type")
+    issue_create.add_argument("--priority")
+    issue_create.add_argument("--assignee")
+    issue_create.add_argument("--mine", action="store_true")
+    issue_create.add_argument("--me-from", choices=["git-email-localpart"], default="git-email-localpart")
+    issue_create.add_argument("--field", action="append")
+    issue_create.add_argument("--board", help="Board id or exact board name")
+    issue_create.add_argument("--current-sprint", action="store_true")
+    issue_create.add_argument("--apply", action="store_true")
+
+    issue_create_subtask = issue_subparsers.add_parser(
+        "create-subtask",
+        help="Create a subtask with preview-first semantics",
+    )
+    issue_create_subtask.add_argument("--parent-issue-id", "--parent", dest="parent_issue_id", required=True)
+    issue_create_subtask.add_argument("--project")
+    issue_create_subtask.add_argument("--summary", required=True)
+    issue_create_subtask.add_argument("--description")
+    issue_create_subtask.add_argument("--type")
+    issue_create_subtask.add_argument("--priority")
+    issue_create_subtask.add_argument("--assignee")
+    issue_create_subtask.add_argument("--mine", action="store_true")
+    issue_create_subtask.add_argument("--me-from", choices=["git-email-localpart"], default="git-email-localpart")
+    issue_create_subtask.add_argument("--field", action="append")
+    issue_create_subtask.add_argument("--board", help="Board id or exact board name")
+    issue_create_subtask.add_argument("--current-sprint", action="store_true")
+    issue_create_subtask.add_argument("--apply", action="store_true")
+
+    issue_link = issue_subparsers.add_parser(
+        "link",
+        help="Create an issue link with preview-first semantics",
+    )
+    issue_link.add_argument("--source", dest="source_issue_id", required=True)
+    issue_link.add_argument("--target", dest="target_issue_id", required=True)
+    issue_link.add_argument("--type", dest="link_type", required=True)
+    issue_link.add_argument("--apply", action="store_true")
 
     issue_command = issue_subparsers.add_parser(
         "command",
@@ -998,7 +2057,12 @@ async def main_async() -> None:
             return
         if args.command == "issue":
             with activated_auth_manager(skill_dir, args.instance, require_ready=True) as (_, selection, auth_manager):
-                await handle_issue(args, auth_manager, base_url=base_url_for_label(selection.label))
+                await handle_issue(
+                    args,
+                    auth_manager,
+                    selection.label,
+                    base_url=base_url_for_label(selection.label),
+                )
             return
         fail(f"Unknown command: {args.command}")
     except InstanceRuntimeError as exc:

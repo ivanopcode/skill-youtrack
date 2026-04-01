@@ -54,8 +54,8 @@ PY
     fi
   done
 
-  cat >&2 <<'EOF'
-No supported Python interpreter found for the youtrack-cli skill.
+cat >&2 <<'EOF'
+No supported Python interpreter found for the skill-youtrack skill.
 Expected Python 3.10-3.13. Python 3.14 is intentionally skipped because the tested youtrack-cli stack is not known-good there.
 Set YOUTRACK_CLI_PYTHON to an explicit interpreter path if needed.
 EOF

@@ -39,14 +39,14 @@ class SetupSupportTest(unittest.TestCase):
         self.addCleanup(self.env_patcher.stop)
 
     def make_source_skill_dir(self) -> Path:
-        skill_dir = self.root / "source" / "youtrack-cli"
+        skill_dir = self.root / "source" / "skill-youtrack"
         (skill_dir / "agents").mkdir(parents=True, exist_ok=True)
         (skill_dir / "locales").mkdir(parents=True, exist_ok=True)
         (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
 
         (skill_dir / "SKILL.md").write_text(
             "---\n"
-            "name: youtrack-cli\n"
+            "name: skill-youtrack\n"
             "description: English source description\n"
             "---\n\n"
             "# Sample Skill\n",
@@ -56,7 +56,7 @@ class SetupSupportTest(unittest.TestCase):
             'interface:\n'
             '  display_name: "English Display"\n'
             '  short_description: "English Short"\n'
-            '  default_prompt: "Use $youtrack-cli in English."\n',
+            '  default_prompt: "Use $skill-youtrack in English."\n',
             encoding="utf-8",
         )
         (skill_dir / "locales" / "metadata.json").write_text(
@@ -67,14 +67,14 @@ class SetupSupportTest(unittest.TestCase):
                             "description": "English localized description",
                             "display_name": "English Display",
                             "short_description": "English Short",
-                            "default_prompt": "Use $youtrack-cli in English.",
+                            "default_prompt": "Use $skill-youtrack in English.",
                             "local_prefix": "[local] ",
                         },
                         "ru": {
                             "description": "Русское описание",
                             "display_name": "Русский Display",
                             "short_description": "Русский Short",
-                            "default_prompt": "Используй $youtrack-cli по-русски.",
+                            "default_prompt": "Используй $skill-youtrack по-русски.",
                             "local_prefix": "[локально] ",
                         },
                     }
@@ -99,7 +99,7 @@ class SetupSupportTest(unittest.TestCase):
         self.assertIn('description: "Русское описание / English localized description"', skill_text)
         self.assertIn('display_name: "Русский Display"', openai_yaml)
         self.assertIn('short_description: "Русский Short"', openai_yaml)
-        self.assertIn('default_prompt: "Используй $youtrack-cli по-русски."', openai_yaml)
+        self.assertIn('default_prompt: "Используй $skill-youtrack по-русски."', openai_yaml)
 
     def test_perform_global_install_requires_locale_for_first_install(self) -> None:
         source_dir = self.make_source_skill_dir()
@@ -132,16 +132,16 @@ class SetupSupportTest(unittest.TestCase):
 
         self.assertEqual(
             first_result.runtime_dir.resolve(),
-            (self.xdg_data_home / "agents" / "skills" / "youtrack-cli").resolve(),
+            (self.xdg_data_home / "agents" / "skills" / "skill-youtrack").resolve(),
         )
         self.assertEqual(second_result.locale_mode, "ru")
         self.assertTrue((first_result.runtime_dir / ss.MANIFEST_FILENAME).exists())
         self.assertEqual(
-            (self.home / ".claude" / "skills" / "youtrack-cli").resolve(),
+            (self.home / ".claude" / "skills" / "skill-youtrack").resolve(),
             first_result.runtime_dir.resolve(),
         )
         self.assertEqual(
-            (self.home / ".codex" / "skills" / "youtrack-cli").resolve(),
+            (self.home / ".codex" / "skills" / "skill-youtrack").resolve(),
             first_result.runtime_dir.resolve(),
         )
         self.assertIn(
@@ -178,15 +178,15 @@ class SetupSupportTest(unittest.TestCase):
 
         self.assertEqual(
             first_result.runtime_dir.resolve(),
-            (repo_root / ".skills" / "youtrack-cli").resolve(),
+            (repo_root / ".skills" / "skill-youtrack").resolve(),
         )
         self.assertEqual(
-            os.readlink(repo_root / ".claude" / "skills" / "youtrack-cli"),
-            "../../.skills/youtrack-cli",
+            os.readlink(repo_root / ".claude" / "skills" / "skill-youtrack"),
+            "../../.skills/skill-youtrack",
         )
         self.assertEqual(
-            os.readlink(repo_root / ".codex" / "skills" / "youtrack-cli"),
-            "../../.skills/youtrack-cli",
+            os.readlink(repo_root / ".codex" / "skills" / "skill-youtrack"),
+            "../../.skills/skill-youtrack",
         )
         self.assertIn("project-fixed", str(exc.exception))
         rendered_skill = (first_result.runtime_dir / "SKILL.md").read_text(encoding="utf-8")
@@ -194,15 +194,15 @@ class SetupSupportTest(unittest.TestCase):
         self.assertIn('description: "[локально] Русское описание"', rendered_skill)
         self.assertIn('display_name: "[локально] Русский Display"', rendered_yaml)
         self.assertIn('short_description: "[локально] Русский Short"', rendered_yaml)
-        self.assertIn('default_prompt: "Используй $youtrack-cli по-русски."', rendered_yaml)
+        self.assertIn('default_prompt: "Используй $skill-youtrack по-русски."', rendered_yaml)
 
     def test_resolve_source_dir_prefers_manifest_source_dir(self) -> None:
         source_dir = self.make_source_skill_dir().resolve()
-        installed_dir = self.root / "installed" / "youtrack-cli"
+        installed_dir = self.root / "installed" / "skill-youtrack"
         installed_dir.mkdir(parents=True, exist_ok=True)
         ss.write_install_manifest(
             skill_dir=installed_dir,
-            skill_name="youtrack-cli",
+            skill_name="skill-youtrack",
             install_mode="global",
             locale_mode="en",
             source_dir=source_dir,

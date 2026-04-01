@@ -1,6 +1,6 @@
-# youtrack-cli
+# skill-youtrack
 
-`youtrack-cli` is a standalone skill and local CLI runtime for working with one or more
+`skill-youtrack` is a standalone skill and local CLI runtime for working with one or more
 JetBrains YouTrack instances from the terminal or from an agent environment.
 It is designed for deterministic operational workflows:
 
@@ -29,7 +29,9 @@ metadata from `locales/metadata.json` according to the selected install locale.
 - pin an active instance per installed skill copy
 - inspect agile boards and current sprints
 - read board-visible issues with `web` or strict sprint membership semantics
+- expose board-oriented reads such as `board current`, `board my-tasks`, and `board tasks`
 - inspect, search, comment on, and update issues
+- create issues and subtasks through preview-first `ytx` workflows
 - manage explicit board and sprint membership
 - resolve the current developer from git config through `--mine`
 
@@ -131,7 +133,7 @@ used through the scoped board surface rather than unrestricted board discovery.
 Use this when the skill should be available from your home-level agent setup:
 
 ```bash
-~/agents/skills/youtrack-cli/setup.sh global --locale en
+~/agents/skills/skill-youtrack/setup.sh global --locale en
 ```
 
 This does the following:
@@ -140,19 +142,19 @@ This does the following:
 - bootstraps the managed copy `.venv/`
 - installs the Python dependencies
 - renders installed metadata in the requested locale
-- links the skill into `~/.claude/skills/youtrack-cli`
-- links the skill into `~/.codex/skills/youtrack-cli`
+- links the skill into `~/.claude/skills/skill-youtrack`
+- links the skill into `~/.codex/skills/skill-youtrack`
 
 The source of truth remains the source directory:
 
 ```text
-~/agents/skills/youtrack-cli
+~/agents/skills/skill-youtrack
 ```
 
 The managed global install lives under:
 
 ```text
-${XDG_DATA_HOME:-~/.local/share}/agents/skills/youtrack-cli
+${XDG_DATA_HOME:-~/.local/share}/agents/skills/skill-youtrack
 ```
 
 ### Local Install
@@ -160,17 +162,17 @@ ${XDG_DATA_HOME:-~/.local/share}/agents/skills/youtrack-cli
 Use this when a project should carry its own tracked copy of the skill:
 
 ```bash
-~/agents/skills/youtrack-cli/setup.sh local /abs/path/to/repo --locale ru
+~/agents/skills/skill-youtrack/setup.sh local /abs/path/to/repo --locale ru
 ```
 
 This does the following:
 
-- copies the skill into `<repo>/.skills/youtrack-cli`
+- copies the skill into `<repo>/.skills/skill-youtrack`
 - removes nested git metadata from that copied skill
 - bootstraps the copied skill runtime
 - renders installed metadata in the selected locale
-- links `<repo>/.claude/skills/youtrack-cli` to the local copy
-- links `<repo>/.codex/skills/youtrack-cli` to the local copy
+- links `<repo>/.claude/skills/skill-youtrack` to the local copy
+- links `<repo>/.codex/skills/skill-youtrack` to the local copy
 - prefixes the local skill metadata with a locale-aware local marker so it is distinguishable in skill UIs
 
 The copied skill is intended to be tracked by the project repository.
@@ -190,7 +192,7 @@ silently rewriting tracked metadata.
 Authentication requires an explicit instance label:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/yt \
+~/agents/skills/skill-youtrack/scripts/yt \
   --instance primary \
   auth login \
   --base-url https://your-youtrack-host
@@ -202,7 +204,7 @@ the current installed copy of the skill.
 On large YouTrack instances, strongly prefer setting scoped boards at login:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/yt \
+~/agents/skills/skill-youtrack/scripts/yt \
   --instance primary \
   --board-id 83-2561 \
   --board-id agiles/195-1 \
@@ -216,19 +218,19 @@ base URL and SSL settings.
 For custom CA or self-signed deployments:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/yt \
+~/agents/skills/skill-youtrack/scripts/yt \
   --instance primary \
   auth login \
   --base-url https://your-youtrack-host \
   --cert-file /path/to/cert.pem
 
-~/agents/skills/youtrack-cli/scripts/yt \
+~/agents/skills/skill-youtrack/scripts/yt \
   --instance primary \
   auth login \
   --base-url https://your-youtrack-host \
   --ca-bundle /path/to/ca-bundle.pem
 
-~/agents/skills/youtrack-cli/scripts/yt \
+~/agents/skills/skill-youtrack/scripts/yt \
   --instance primary \
   auth login \
   --base-url https://your-youtrack-host \
@@ -255,14 +257,14 @@ Selection precedence is:
 Useful commands:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/yt instances list
-~/agents/skills/youtrack-cli/scripts/yt instances current
-~/agents/skills/youtrack-cli/scripts/yt instances use primary
-~/agents/skills/youtrack-cli/scripts/yt instances scope set primary 83-2561 195-1
-~/agents/skills/youtrack-cli/scripts/yt instances scope clear primary
-~/agents/skills/youtrack-cli/scripts/yt instances rename primary main
-~/agents/skills/youtrack-cli/scripts/yt --instance primary auth status
-~/agents/skills/youtrack-cli/scripts/yt --instance primary auth logout
+~/agents/skills/skill-youtrack/scripts/yt instances list
+~/agents/skills/skill-youtrack/scripts/yt instances current
+~/agents/skills/skill-youtrack/scripts/yt instances use primary
+~/agents/skills/skill-youtrack/scripts/yt instances scope set primary 83-2561 195-1
+~/agents/skills/skill-youtrack/scripts/yt instances scope clear primary
+~/agents/skills/skill-youtrack/scripts/yt instances rename primary main
+~/agents/skills/skill-youtrack/scripts/yt --instance primary auth status
+~/agents/skills/skill-youtrack/scripts/yt --instance primary auth logout
 ```
 
 `instances list` and `instances current` expose `scoped_board_ids`. Agents
@@ -278,9 +280,10 @@ The intended narrowing strategy is:
 
 1. Read `yt instances current`
 2. If `scoped_board_ids` is non-empty, stay inside that scope
-3. Use `ytx board scoped-issues --mine` for “my current sprint tasks”
-4. Use `ytx board list --scoped` if board metadata is needed
-5. Fall back to unrestricted `ytx board list` only when there is no scope
+3. Use `ytx board current` or `ytx board my-tasks` before lower-level reads
+4. Use `ytx board tasks --assignee ...` or `ytx board tasks --initiator ...` for person-specific board queries
+5. Use `ytx board list --scoped` if board metadata is needed
+6. Fall back to unrestricted `ytx board list` only when there is no scope
 
 ## CLI Usage
 
@@ -289,9 +292,9 @@ The intended narrowing strategy is:
 Use `yt` when you want the broader upstream command surface:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/yt boards list
-~/agents/skills/youtrack-cli/scripts/yt projects list
-~/agents/skills/youtrack-cli/scripts/yt issues search "state: Open"
+~/agents/skills/skill-youtrack/scripts/yt boards list
+~/agents/skills/skill-youtrack/scripts/yt projects list
+~/agents/skills/skill-youtrack/scripts/yt issues search "state: Open"
 ```
 
 ### Agent-Friendly Reads Through `ytx`
@@ -299,15 +302,20 @@ Use `yt` when you want the broader upstream command surface:
 Use `ytx` when output stability matters:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board list --scoped
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board show <board-id>
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board sprints <board-id> --current
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board issues <board-id> --source web
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary board scoped-issues --mine
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board current
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board my-tasks
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board tasks --assignee "Developer Name"
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board tasks --initiator "Developer Name"
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board list --scoped
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board show <board-id>
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board sprints <board-id> --current
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board issues <board-id> --source web
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary board scoped-issues --mine
 
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary issue show <issue-id>
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary issue search "id: <issue-id>"
-~/agents/skills/youtrack-cli/scripts/ytx --instance primary issue comment-list <issue-id>
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary issue brief <issue-id>
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary issue show <issue-id>
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary issue search "id: <issue-id>"
+~/agents/skills/skill-youtrack/scripts/ytx --instance primary issue comment-list <issue-id>
 ```
 
 ### Current Developer Resolution
@@ -315,8 +323,8 @@ Use `ytx` when output stability matters:
 `--mine` resolves the current developer from `git config user.email`:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/ytx board issues <board-id> --mine
-~/agents/skills/youtrack-cli/scripts/ytx board scoped-issues --mine
+~/agents/skills/skill-youtrack/scripts/ytx board issues <board-id> --mine
+~/agents/skills/skill-youtrack/scripts/ytx board scoped-issues --mine
 ```
 
 This is intended for boards that use assignee-based workflows. On large
@@ -326,25 +334,54 @@ board crawl.
 ### Issue Mutations
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/ytx issue comment-add <issue-id> "Comment text"
-~/agents/skills/youtrack-cli/scripts/ytx issue update <issue-id> --state "In Progress"
-~/agents/skills/youtrack-cli/scripts/ytx issue update <issue-id> --custom-field "Field Name=Value"
-~/agents/skills/youtrack-cli/scripts/ytx issue command <issue-id> "add tag important"
+~/agents/skills/skill-youtrack/scripts/ytx board create-task --summary "Task summary"
+~/agents/skills/skill-youtrack/scripts/ytx board create-subtask --parent <issue-id> --summary "Task summary"
+~/agents/skills/skill-youtrack/scripts/ytx issue create --project <project-id> --summary "Task summary"
+~/agents/skills/skill-youtrack/scripts/ytx issue create-subtask --parent <issue-id> --summary "Task summary"
+~/agents/skills/skill-youtrack/scripts/ytx issue link --source <issue-id> --target <issue-id> --type "Subtask"
+~/agents/skills/skill-youtrack/scripts/ytx issue comment-add <issue-id> "Comment text"
+~/agents/skills/skill-youtrack/scripts/ytx issue update <issue-id> --state "In Progress"
+~/agents/skills/skill-youtrack/scripts/ytx issue update <issue-id> --custom-field "Field Name=Value"
+~/agents/skills/skill-youtrack/scripts/ytx issue command <issue-id> "add tag important"
 ```
 
-Use `--dry-run` before risky command-based mutations:
+High-level create and link flows are preview-first. Run them once without `--apply`,
+inspect the preview envelope, and then rerun with `--apply`:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/ytx issue command <issue-id> "add Board <board-name> <sprint-name>" --dry-run
+~/agents/skills/skill-youtrack/scripts/ytx board create-subtask \
+  --parent <issue-id> \
+  --summary "Task summary" \
+  --field "Stream=Core" \
+  --current-sprint
+
+~/agents/skills/skill-youtrack/scripts/ytx board create-subtask \
+  --parent <issue-id> \
+  --summary "Task summary" \
+  --field "Stream=Core" \
+  --current-sprint \
+  --apply
 ```
+
+Use `--dry-run` before risky raw command-based mutations:
+
+```bash
+~/agents/skills/skill-youtrack/scripts/ytx issue command <issue-id> "add Board <board-name> <sprint-name>" --dry-run
+```
+
+For agent usage, the intended behavior is:
+
+1. preview first
+2. if the preview matches the user request, run `--apply` in the same turn
+3. ask the user only when the preview reveals ambiguity or risk
 
 ### Explicit Board Membership
 
 For boards that require manual sprint membership:
 
 ```bash
-~/agents/skills/youtrack-cli/scripts/ytx issue board-add <issue-id> --board "<board-name>" --current-sprint
-~/agents/skills/youtrack-cli/scripts/ytx issue board-remove <issue-id> --board "<board-name>" --sprint "<sprint-name>"
+~/agents/skills/skill-youtrack/scripts/ytx issue board-add <issue-id> --board "<board-name>" --current-sprint
+~/agents/skills/skill-youtrack/scripts/ytx issue board-remove <issue-id> --board "<board-name>" --sprint "<sprint-name>"
 ```
 
 ## Agent Environment Usage
@@ -354,23 +391,24 @@ Typical agent prompts should ask for the operation, not for the raw shell syntax
 
 Examples:
 
-- `Use $youtrack-cli to show the current sprint for board <board-id>.`
-- `Use $youtrack-cli to list my visible issues on the scoped boards for the current sprint.`
-- `Use $youtrack-cli to add a comment to <issue-id> and then show the updated issue.`
-- `Use $youtrack-cli to switch to instance <label> and inspect board <board-id>.`
+- `Use $skill-youtrack to show the current board context and my tasks for this sprint.`
+- `Use $skill-youtrack to list tasks assigned to <person> on the current board.`
+- `Use $skill-youtrack to create a subtask under <issue-id>, preview it, and then apply it.`
+- `Use $skill-youtrack to add a comment to <issue-id> and then show the updated issue.`
+- `Use $skill-youtrack to switch to instance <label> and inspect board <board-id>.`
 
 When an agent needs explicit shell commands, the preferred pattern is:
 
 ```bash
-~/.codex/skills/youtrack-cli/scripts/ytx board scoped-issues --mine
-~/.codex/skills/youtrack-cli/scripts/ytx issue show <issue-id>
+~/.codex/skills/skill-youtrack/scripts/ytx board my-tasks
+~/.codex/skills/skill-youtrack/scripts/ytx issue brief <issue-id>
 ```
 
 In a project-local install, the equivalent paths are:
 
 ```bash
-<repo>/.codex/skills/youtrack-cli/scripts/ytx board scoped-issues --mine
-<repo>/.codex/skills/youtrack-cli/scripts/ytx issue show <issue-id>
+<repo>/.codex/skills/skill-youtrack/scripts/ytx board my-tasks
+<repo>/.codex/skills/skill-youtrack/scripts/ytx issue brief <issue-id>
 ```
 
 ## Update And Maintenance
@@ -385,7 +423,7 @@ Then reinstall or refresh the target environment.
 After updating the source skill:
 
 ```bash
-~/agents/skills/youtrack-cli/setup.sh global --locale en
+~/agents/skills/skill-youtrack/setup.sh global --locale en
 ```
 
 If the install already has a manifest, you may omit `--locale` to reuse it.
@@ -396,10 +434,10 @@ This refreshes the managed runtime copy and reaffirms the symlinks.
 After updating the source skill:
 
 ```bash
-~/agents/skills/youtrack-cli/setup.sh local /abs/path/to/repo --locale ru
+~/agents/skills/skill-youtrack/setup.sh local /abs/path/to/repo --locale ru
 ```
 
-This recopies the source skill into `<repo>/.skills/youtrack-cli`, strips nested
+This recopies the source skill into `<repo>/.skills/skill-youtrack`, strips nested
 git metadata again, refreshes the local runtime, and keeps the project-local links aligned.
 If that project has already been installed once, you may omit `--locale` and the
 stored project locale will be reused.
@@ -431,6 +469,8 @@ should be followed by a quick regression pass on:
 - `yt instances ...`
 - `ytx board ...`
 - `ytx issue ...`
+- `ytx board create-task ...`
+- `ytx board create-subtask ...`
 
 ## License
 

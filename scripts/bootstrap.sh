@@ -50,6 +50,6 @@ fi
 if [[ $quiet -eq 0 ]]; then
   "$VENV_DIR/bin/python" - <<'PY'
 import sys
-print(f"youtrack-cli skill ready with Python {sys.version.split()[0]}")
+print(f"skill-youtrack ready with Python {sys.version.split()[0]}")
 PY
 fi

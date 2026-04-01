@@ -16,7 +16,7 @@ from setup_support import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="setup.sh",
-        description="Install the youtrack-cli skill into global or project-local agent environments.",
+        description="Install the skill-youtrack skill into global or project-local agent environments.",
     )
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     local_parser = subparsers.add_parser(
         "local",
-        help="Copy the skill into <repo>/.skills/youtrack-cli and link project-local agent dirs to that copy",
+        help="Copy the skill into <repo>/.skills/skill-youtrack and link project-local agent dirs to that copy",
     )
     local_parser.add_argument("repo_path", help="Path to the git repository root or any path inside that repository")
     local_parser.add_argument("--locale", help=locale_help)

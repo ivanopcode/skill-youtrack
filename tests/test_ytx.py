@@ -23,13 +23,24 @@ class YtxTest(unittest.TestCase):
             "idReadable": "PMA-21079",
             "summary": "Example issue",
             "description": "Example description",
+            "resolved": None,
             "project": {"name": "Partners Mobile App"},
             "assignee": {"login": "oparin.ivan3", "fullName": "Иван Опарин"},
             "customFields": [
                 {"name": "State", "value": {"name": "In Progress"}},
                 {"name": "Type", "value": {"name": "Epic"}},
                 {"name": "Priority", "value": {"name": "Major"}},
+                {"name": "Initiator", "value": {"name": "Малышев Максим"}},
             ],
+        }
+
+    def sample_board(self) -> dict[str, object]:
+        return {
+            "id": "83-2561",
+            "name": "PMA iOS Core",
+            "projects": [{"id": "77-344", "name": "Partners Mobile App", "shortName": "PMA"}],
+            "currentSprint": {"id": "84-96818", "name": "Спринт 47"},
+            "sprints": [],
         }
 
     def test_parser_accepts_top_level_instance_and_instances_command(self) -> None:
@@ -50,6 +61,26 @@ class YtxTest(unittest.TestCase):
         args = parser.parse_args(["--instance", "primary", "board", "scoped-issues", "--mine"])
         self.assertEqual(args.board_command, "scoped-issues")
         self.assertTrue(args.mine)
+
+        args = parser.parse_args(["board", "current", "--board", "83-2561"])
+        self.assertEqual(args.board_command, "current")
+        self.assertEqual(args.board, "83-2561")
+
+        args = parser.parse_args(["board", "tasks", "--board", "83-2561", "--assignee", "me"])
+        self.assertEqual(args.board_command, "tasks")
+        self.assertEqual(args.assignee, "me")
+
+        args = parser.parse_args(["board", "create-subtask", "--parent", "PMA-1", "--summary", "Test"])
+        self.assertEqual(args.board_command, "create-subtask")
+        self.assertEqual(args.parent_issue_id, "PMA-1")
+
+        args = parser.parse_args(["issue", "create", "--project", "PMA", "--summary", "Test"])
+        self.assertEqual(args.issue_command, "create")
+        self.assertEqual(args.project, "PMA")
+
+        args = parser.parse_args(["issue", "link", "--source", "PMA-1", "--target", "PMA-2", "--type", "Subtask"])
+        self.assertEqual(args.issue_command, "link")
+        self.assertEqual(args.link_type, "Subtask")
 
     def test_main_async_routes_board_commands_through_activated_auth_manager(self) -> None:
         context_manager = mock.MagicMock()
@@ -172,6 +203,213 @@ class YtxTest(unittest.TestCase):
             payload["issues"][0]["url"],
             "https://youtrack.example.com/issue/PMA-21079",
         )
+
+    def test_resolve_target_board_uses_single_scoped_board_when_board_omitted(self) -> None:
+        service = mock.Mock()
+        service.get_board = AsyncMock(return_value={"status": "success", "data": self.sample_board()})
+
+        with mock.patch.object(ytx, "scoped_board_ids_for_label", return_value=["83-2561"]):
+            board, scoped_ids = asyncio.run(ytx.resolve_target_board(service, "wb", None))
+
+        self.assertEqual(board["id"], "83-2561")
+        self.assertEqual(scoped_ids, ["83-2561"])
+
+    def test_resolve_target_board_requires_board_when_scope_has_multiple_boards(self) -> None:
+        service = mock.Mock()
+        service.get_board = AsyncMock(
+            side_effect=[
+                {"status": "success", "data": self.sample_board()},
+                {"status": "success", "data": {**self.sample_board(), "id": "83-9999", "name": "Other"}},
+            ]
+        )
+
+        with mock.patch.object(ytx, "scoped_board_ids_for_label", return_value=["83-2561", "83-9999"]):
+            with self.assertRaises(SystemExit):
+                asyncio.run(ytx.resolve_target_board(service, "wb", None))
+
+    def test_build_typed_field_payload_supports_multi_enum_and_period(self) -> None:
+        multi_enum = ytx.build_typed_field_payload(
+            {
+                "field_name": "Stream",
+                "issue_field_type": "MultiEnumIssueCustomField",
+                "bundle_element_type": "EnumBundleElement",
+            },
+            ["Core", "RKI"],
+        )
+        self.assertEqual(multi_enum["$type"], "MultiEnumIssueCustomField")
+        self.assertEqual([item["name"] for item in multi_enum["value"]], ["Core", "RKI"])
+
+        period = ytx.build_typed_field_payload(
+            {"field_name": "Pre-assessment", "issue_field_type": "PeriodIssueCustomField"},
+            ["1d"],
+        )
+        self.assertEqual(period["$type"], "PeriodIssueCustomField")
+        self.assertEqual(period["value"]["presentation"], "1d")
+
+        single_user = ytx.build_typed_field_payload(
+            {"field_name": "Assignee", "project_field_type": "UserProjectCustomField"},
+            ["oparin.ivan3"],
+        )
+        self.assertEqual(single_user["$type"], "SingleUserIssueCustomField")
+        self.assertEqual(single_user["value"]["login"], "oparin.ivan3")
+
+    def test_build_board_tasks_payload_filters_initiator_and_active_only(self) -> None:
+        board = self.sample_board()
+        matching_issue = self.sample_issue()
+        done_issue = {**self.sample_issue(), "idReadable": "PMA-999", "resolved": 123}
+        other_initiator = {
+            **self.sample_issue(),
+            "idReadable": "PMA-998",
+            "customFields": [
+                {"name": "State", "value": {"name": "In Progress"}},
+                {"name": "Type", "value": {"name": "Task"}},
+                {"name": "Priority", "value": {"name": "Normal"}},
+                {"name": "Initiator", "value": {"name": "Другой Человек"}},
+            ],
+        }
+
+        with mock.patch.object(
+            ytx,
+            "resolve_target_board",
+            new=AsyncMock(return_value=(board, ["83-2561"])),
+        ), mock.patch.object(
+            ytx,
+            "build_board_issues_payload",
+            new=AsyncMock(
+                return_value={
+                    "board_id": "83-2561",
+                    "board_name": "PMA iOS Core",
+                    "sprint_id": "84-96818",
+                    "sprint_name": "Спринт 47",
+                    "filters": {"assignee": None},
+                    "issues": [matching_issue, done_issue, other_initiator],
+                }
+            ),
+        ):
+            payload = asyncio.run(
+                ytx.build_board_tasks_payload(
+                    mock.sentinel.service,
+                    mock.sentinel.auth_manager,
+                    selection_label="wb",
+                    board_ref=None,
+                    source="web",
+                    assignee=None,
+                    me_from=None,
+                    initiator="Малышев Максим",
+                    state=None,
+                    active_only=True,
+                    limit=None,
+                    base_url="https://youtrack.example.com",
+                )
+            )
+
+        self.assertEqual(payload["issue_count"], 1)
+        self.assertEqual(payload["issues"][0]["id"], "PMA-21079")
+        self.assertEqual(payload["board_url"], "https://youtrack.example.com/agiles/83-2561/current")
+
+    def test_prepare_issue_create_operation_builds_preview(self) -> None:
+        board = self.sample_board()
+        project = {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"}
+        field_payloads = [
+            {
+                "$type": "MultiEnumIssueCustomField",
+                "name": "Stream",
+                "value": [{"$type": "EnumBundleElement", "name": "Core"}],
+            }
+        ]
+        field_previews = [{"name": "Stream", "type": "MultiEnumIssueCustomField", "value": ["Core"], "required": True}]
+
+        with mock.patch.object(
+            ytx,
+            "resolve_target_board",
+            new=AsyncMock(return_value=(board, ["83-2561"])),
+        ), mock.patch.object(
+            ytx,
+            "resolve_project_context",
+            new=AsyncMock(return_value=project),
+        ), mock.patch.object(
+            ytx,
+            "resolve_user_reference",
+            new=AsyncMock(return_value=("oparin.ivan3", {"user": {"login": "oparin.ivan3"}})),
+        ), mock.patch.object(
+            ytx,
+            "build_project_field_payloads",
+            new=AsyncMock(return_value=(field_payloads, field_previews)),
+        ):
+            prepared = asyncio.run(
+                ytx.prepare_issue_create_operation(
+                    mock.sentinel.auth_manager,
+                    selection_label="wb",
+                    summary="Worktree setup",
+                    description="Desc",
+                    project_ref=None,
+                    board_ref=None,
+                    use_current_sprint=True,
+                    parent_issue_id="PMA-21079",
+                    type_name="Task",
+                    priority="Normal",
+                    assignee=None,
+                    mine=True,
+                    me_from="git-email-localpart",
+                    raw_fields=[],
+                )
+            )
+
+        self.assertEqual(prepared["issue_payload"]["project"]["id"], "77-344")
+        self.assertEqual(prepared["preview"]["operation"], "create-subtask")
+        self.assertEqual(len(prepared["preview"]["planned_actions"]), 3)
+
+    def test_apply_issue_create_operation_returns_partial_success_when_link_fails(self) -> None:
+        prepared = {
+            "issue_payload": {"project": {"id": "77-344"}, "summary": "Worktree setup"},
+            "parent_issue_id": "PMA-21079",
+            "board": self.sample_board(),
+            "sprint_name": "Спринт 47",
+        }
+
+        workflow_service = mock.Mock()
+        workflow_service.create_issue = AsyncMock(return_value={"status": "success", "data": {"id": "92-1"}})
+        issue_service = mock.Mock()
+        issue_service.create_link = AsyncMock(return_value={"status": "error", "message": "boom"})
+
+        with mock.patch.object(ytx, "WorkflowIssueService", return_value=workflow_service), \
+            mock.patch.object(ytx, "IssueService", return_value=issue_service), \
+            mock.patch.object(ytx, "IssueManager"), \
+            mock.patch.object(
+                ytx,
+                "build_issue_brief_payload",
+                new=AsyncMock(
+                    return_value={
+                        "id": "PMA-22199",
+                        "summary": "Worktree setup",
+                        "url": "https://youtrack.example.com/issue/PMA-22199",
+                    }
+                ),
+            ):
+            result = asyncio.run(
+                ytx.apply_issue_create_operation(
+                    mock.sentinel.auth_manager,
+                    prepared,
+                    base_url="https://youtrack.example.com",
+                )
+            )
+
+        self.assertEqual(result["status"], "partial_success")
+        self.assertEqual(result["created_issue"]["id"], "PMA-22199")
+
+    def test_preview_or_apply_issue_link_preview_mode(self) -> None:
+        payload = asyncio.run(
+            ytx.preview_or_apply_issue_link(
+                mock.sentinel.auth_manager,
+                source_issue_id="PMA-1",
+                target_issue_id="PMA-2",
+                link_type="Subtask",
+                apply=False,
+            )
+        )
+
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["planned_actions"][0]["type"], "link_issue")
 
     def test_handle_issue_show_includes_url(self) -> None:
         args = mock.Mock(issue_command="show", issue_id="PMA-21079", raw=False)
