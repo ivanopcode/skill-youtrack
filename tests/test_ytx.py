@@ -334,7 +334,11 @@ class YtxTest(unittest.TestCase):
         ), mock.patch.object(
             ytx,
             "build_project_field_payloads",
-            new=AsyncMock(return_value=(field_payloads, field_previews)),
+            new=AsyncMock(return_value=(field_payloads, field_previews, {"Stream": {"field_id": "78-2891"}})),
+        ), mock.patch.object(
+            ytx,
+            "resolve_existing_issue_field_context",
+            new=AsyncMock(return_value=({"Stream": {"issue_field_type": "MultiEnumIssueCustomField"}}, {}, "PMA-21079")),
         ):
             prepared = asyncio.run(
                 ytx.prepare_issue_create_operation(
@@ -358,6 +362,165 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(prepared["issue_payload"]["project"]["id"], "77-344")
         self.assertEqual(prepared["preview"]["operation"], "create-subtask")
         self.assertEqual(len(prepared["preview"]["planned_actions"]), 3)
+        self.assertEqual(prepared["existing_issue_field_source"], "PMA-21079")
+
+    def test_build_project_field_payloads_prefers_existing_issue_multi_enum_shape_and_requiredness(self) -> None:
+        service = mock.Mock()
+        service.get_project_custom_fields = AsyncMock(
+            return_value={
+                "status": "success",
+                "data": [
+                    {
+                        "id": "78-2891",
+                        "canBeEmpty": False,
+                        "$type": "EnumProjectCustomField",
+                        "field": {"name": "Stream"},
+                    }
+                ],
+            }
+        )
+        service.discover_custom_field = AsyncMock(
+            return_value={
+                "status": "success",
+                "data": {
+                    "field_name": "Stream",
+                    "field_id": "78-2891",
+                    "project_field_type": "EnumProjectCustomField",
+                    "issue_field_type": "SingleEnumIssueCustomField",
+                    "bundle_element_type": "EnumBundleElement",
+                },
+            }
+        )
+
+        with mock.patch.object(ytx, "ProjectService", return_value=service):
+            payloads, previews, field_infos = asyncio.run(
+                ytx.build_project_field_payloads(
+                    mock.sentinel.auth_manager,
+                    "PMA",
+                    {"Stream": ["Core"]},
+                    existing_issue_field_shapes={
+                        "Stream": {
+                            "issue_field_type": "MultiEnumIssueCustomField",
+                            "bundle_element_type": "EnumBundleElement",
+                            "is_multi_value": True,
+                        }
+                    },
+                )
+            )
+
+        self.assertEqual(payloads[0]["$type"], "MultiEnumIssueCustomField")
+        self.assertEqual(previews[0]["required"], True)
+        self.assertEqual(field_infos["Stream"]["can_be_empty"], False)
+
+    def test_apply_issue_create_operation_returns_structured_field_type_mismatch_error(self) -> None:
+        prepared = {
+            "issue_payload": {"project": {"id": "77-344"}, "summary": "Worktree setup"},
+            "project": {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"},
+            "field_infos": {
+                "Stream": {
+                    "field_id": "78-2891",
+                    "issue_field_type": "SingleEnumIssueCustomField",
+                }
+            },
+            "existing_issue_field_shapes": {
+                "Stream": {"issue_field_type": "MultiEnumIssueCustomField"}
+            },
+            "existing_issue_field_source": "PMA-21079",
+        }
+
+        workflow_service = mock.Mock()
+        workflow_service.create_issue = AsyncMock(
+            side_effect=Exception("Unexpected error: Request failed with status 400: Incompatible field type: 78-2891")
+        )
+
+        with mock.patch.object(ytx, "WorkflowIssueService", return_value=workflow_service), \
+            mock.patch.object(ytx, "IssueService"), \
+            mock.patch.object(ytx, "IssueManager"):
+            result = asyncio.run(
+                ytx.apply_issue_create_operation(
+                    mock.sentinel.auth_manager,
+                    prepared,
+                    base_url="https://youtrack.example.com",
+                )
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_kind"], "field_type_mismatch")
+        self.assertEqual(result["recovery_hints"][0]["field_name"], "Stream")
+        self.assertEqual(result["recovery_hints"][0]["observed_issue_field_type"], "MultiEnumIssueCustomField")
+
+    def test_build_issue_create_error_payload_returns_parent_field_hint_for_required_field(self) -> None:
+        prepared = {
+            "project": {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"},
+            "parent_issue_id": "PMA-21079",
+        }
+        service = mock.Mock()
+        service.discover_custom_field = AsyncMock(
+            return_value={"status": "success", "data": {"field_id": "78-2901"}}
+        )
+
+        with mock.patch.object(ytx, "ProjectService", return_value=service), mock.patch.object(
+            ytx,
+            "fetch_issue_field_snapshot",
+            new=AsyncMock(
+                return_value=(
+                    {},
+                    {
+                        "Test State": {
+                            "name": "Test State",
+                            "value": {"name": "Skip Test"},
+                        }
+                    },
+                )
+            ),
+        ):
+            result = asyncio.run(
+                ytx.build_issue_create_error_payload(
+                    mock.sentinel.auth_manager,
+                    prepared,
+                    "Unexpected error: Request failed with status 400: Test State is required",
+                )
+            )
+
+        self.assertEqual(result["error_kind"], "field_required")
+        self.assertEqual(result["recovery_hints"][0]["project_field_id"], "78-2901")
+        self.assertEqual(result["recovery_hints"][0]["fields"], ["Test State=Skip Test"])
+
+    def test_build_issue_create_error_payload_serializes_multi_value_parent_field_hints(self) -> None:
+        prepared = {
+            "project": {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"},
+            "parent_issue_id": "PMA-21079",
+        }
+        service = mock.Mock()
+        service.discover_custom_field = AsyncMock(
+            return_value={"status": "success", "data": {"field_id": "78-2891"}}
+        )
+
+        with mock.patch.object(ytx, "ProjectService", return_value=service), mock.patch.object(
+            ytx,
+            "fetch_issue_field_snapshot",
+            new=AsyncMock(
+                return_value=(
+                    {},
+                    {
+                        "Stream": {
+                            "name": "Stream",
+                            "value": [{"name": "Core"}, {"name": "RKI"}],
+                        }
+                    },
+                )
+            ),
+        ):
+            result = asyncio.run(
+                ytx.build_issue_create_error_payload(
+                    mock.sentinel.auth_manager,
+                    prepared,
+                    "Unexpected error: Request failed with status 400: Stream is required",
+                )
+            )
+
+        self.assertEqual(result["error_kind"], "field_required")
+        self.assertEqual(result["recovery_hints"][0]["fields"], ["Stream=Core", "Stream=RKI"])
 
     def test_apply_issue_create_operation_returns_partial_success_when_link_fails(self) -> None:
         prepared = {

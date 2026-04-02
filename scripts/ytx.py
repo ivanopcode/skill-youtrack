@@ -178,6 +178,10 @@ ISSUE_BRIEF_FIELDS = (
     "links(direction,linkType(id,name,directed,sourceToTarget,targetToSource),issues(id,idReadable,summary)),"
     "customFields(name,value(id,login,name,fullName,text,presentation))"
 )
+ISSUE_FIELD_SNAPSHOT_FIELDS = (
+    "id,idReadable,"
+    "customFields(name,$type,value(id,login,name,fullName,text,presentation,$type))"
+)
 SINGLE_VALUE_FIELD_TYPES = {
     IssueCustomFieldTypes.SINGLE_ENUM,
     IssueCustomFieldTypes.STATE,
@@ -940,10 +944,24 @@ async def prepare_issue_create_operation(
     add_single_field_assignment(field_assignments, "Assignee", resolved_assignee, "--assignee/--mine")
 
     project_lookup_ref = first_non_empty(project.get("shortName"), project.get("id"))
-    custom_field_payloads, field_previews = await build_project_field_payloads(
+    existing_issue_field_shapes: dict[str, dict[str, Any]] = {}
+    existing_issue_field_source = None
+    if field_assignments:
+        (
+            existing_issue_field_shapes,
+            _existing_issue_fields,
+            existing_issue_field_source,
+        ) = await resolve_existing_issue_field_context(
+            auth_manager,
+            parent_issue_id=parent_issue_id,
+            project_lookup_ref=project_lookup_ref,
+        )
+
+    custom_field_payloads, field_previews, resolved_field_infos = await build_project_field_payloads(
         auth_manager,
         project_lookup_ref,
         field_assignments,
+        existing_issue_field_shapes=existing_issue_field_shapes,
     )
 
     issue_payload: dict[str, Any] = {
@@ -981,6 +999,9 @@ async def prepare_issue_create_operation(
         "parent_issue_id": parent_issue_id,
         "issue_payload": issue_payload,
         "preview": preview,
+        "field_infos": resolved_field_infos,
+        "existing_issue_field_shapes": existing_issue_field_shapes,
+        "existing_issue_field_source": existing_issue_field_source,
     }
 
 
@@ -994,9 +1015,12 @@ async def apply_issue_create_operation(
     issue_service = IssueService(auth_manager)
     issue_manager = IssueManager(auth_manager)
 
-    create_result = await quiet_await(workflow_service.create_issue(prepared["issue_payload"]))
+    try:
+        create_result = await quiet_await(workflow_service.create_issue(prepared["issue_payload"]))
+    except Exception as error:
+        return await build_issue_create_error_payload(auth_manager, prepared, error)
     if create_result["status"] != "success":
-        fail(create_result["message"])
+        return await build_issue_create_error_payload(auth_manager, prepared, create_result)
     created = create_result["data"] or {}
     created_id = first_non_empty(created.get("idReadable"), created.get("id"))
     if not created_id:
@@ -1344,7 +1368,159 @@ def add_single_field_assignment(
     assignments[field_name] = [value]
 
 
+def field_preview_is_required(field_info: dict[str, Any]) -> bool:
+    can_be_empty = field_info.get("can_be_empty")
+    if can_be_empty is None:
+        field_details = field_info.get("field_details") or {}
+        if "canBeEmpty" in field_details:
+            can_be_empty = field_details.get("canBeEmpty")
+    return can_be_empty is False
+
+
+def apply_issue_field_shape_hint(
+    field_info: dict[str, Any],
+    issue_field_hint: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    if not issue_field_hint:
+        return field_info
+
+    merged = dict(field_info)
+    hinted_issue_type = issue_field_hint.get("issue_field_type")
+    if hinted_issue_type:
+        merged["issue_field_type"] = hinted_issue_type
+    hinted_bundle_type = issue_field_hint.get("bundle_element_type")
+    if hinted_bundle_type:
+        merged["bundle_element_type"] = hinted_bundle_type
+    if issue_field_hint.get("is_multi_value"):
+        merged["is_multi_value"] = True
+    return merged
+
+
+def extract_issue_custom_fields_map(issue_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for field in issue_data.get("customFields") or []:
+        field_name = field.get("name")
+        if field_name:
+            result[field_name] = field
+    return result
+
+
+def extract_issue_field_shapes(issue_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    shapes: dict[str, dict[str, Any]] = {}
+    for field_name, field in extract_issue_custom_fields_map(issue_data).items():
+        value = field.get("value")
+        bundle_element_type = None
+        if isinstance(value, list):
+            first_item = next((item for item in value if isinstance(item, dict)), None)
+            if first_item:
+                bundle_element_type = first_item.get("$type")
+        elif isinstance(value, dict):
+            bundle_element_type = value.get("$type")
+        shapes[field_name] = {
+            "issue_field_type": field.get("$type"),
+            "bundle_element_type": bundle_element_type,
+            "is_multi_value": isinstance(value, list),
+        }
+    return shapes
+
+
+def extract_issue_field_cli_values(issue_field: Optional[dict[str, Any]]) -> list[str]:
+    if not issue_field:
+        return []
+
+    value = issue_field.get("value")
+    if isinstance(value, list):
+        values: list[str] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            item_value = first_non_empty(item.get("login"), item.get("name"), item.get("presentation"), item.get("text"))
+            if item_value is not None:
+                values.append(item_value)
+        return values
+    if isinstance(value, dict):
+        item_value = first_non_empty(value.get("login"), value.get("name"), value.get("presentation"), value.get("text"))
+        return [item_value] if item_value is not None else []
+    if value is None:
+        return []
+    return [str(value)]
+
+
+async def fetch_issue_field_snapshot(
+    auth_manager: AuthManager,
+    issue_id: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    issue_service = IssueService(auth_manager)
+    try:
+        result = await quiet_await(issue_service.get_issue(issue_id, fields=ISSUE_FIELD_SNAPSHOT_FIELDS))
+    except Exception:
+        return {}, {}
+    if result["status"] != "success":
+        return {}, {}
+    issue_data = result["data"] or {}
+    return extract_issue_field_shapes(issue_data), extract_issue_custom_fields_map(issue_data)
+
+
+async def fetch_project_sample_issue_field_snapshot(
+    auth_manager: AuthManager,
+    project_ref: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], Optional[str]]:
+    issue_service = IssueService(auth_manager)
+    try:
+        response = await issue_service._make_request(
+            "GET",
+            "issues",
+            params={
+                "query": f"project: {project_ref}",
+                "$top": 1,
+                "fields": ISSUE_FIELD_SNAPSHOT_FIELDS,
+            },
+        )
+        result = await issue_service._handle_response(response)
+    except Exception:
+        return {}, {}, None
+    if result["status"] != "success":
+        return {}, {}, None
+    issues = result["data"] or []
+    if not issues:
+        return {}, {}, None
+    issue_data = issues[0] or {}
+    return (
+        extract_issue_field_shapes(issue_data),
+        extract_issue_custom_fields_map(issue_data),
+        first_non_empty(issue_data.get("idReadable"), issue_data.get("id")),
+    )
+
+
+async def resolve_existing_issue_field_context(
+    auth_manager: AuthManager,
+    *,
+    parent_issue_id: Optional[str],
+    project_lookup_ref: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], Optional[str]]:
+    if parent_issue_id:
+        shapes, fields = await fetch_issue_field_snapshot(auth_manager, parent_issue_id)
+        if shapes:
+            return shapes, fields, parent_issue_id
+    return await fetch_project_sample_issue_field_snapshot(auth_manager, project_lookup_ref)
+
+
 def normalized_issue_field_type(field_info: dict[str, Any]) -> str:
+    issue_field_type = field_info.get("issue_field_type")
+    if issue_field_type in {
+        IssueCustomFieldTypes.SINGLE_ENUM,
+        IssueCustomFieldTypes.MULTI_ENUM,
+        IssueCustomFieldTypes.STATE,
+        IssueCustomFieldTypes.SINGLE_USER,
+        IssueCustomFieldTypes.MULTI_USER,
+        IssueCustomFieldTypes.SINGLE_VERSION,
+        IssueCustomFieldTypes.MULTI_VERSION,
+        IssueCustomFieldTypes.TEXT,
+        IssueCustomFieldTypes.PERIOD,
+        IssueCustomFieldTypes.INTEGER,
+    }:
+        return issue_field_type
+
     project_field_type = field_info.get("project_field_type") or (field_info.get("field_details") or {}).get("$type") or ""
     if "MultiEnumProjectCustomField" in project_field_type:
         return IssueCustomFieldTypes.MULTI_ENUM
@@ -1366,21 +1542,6 @@ def normalized_issue_field_type(field_info: dict[str, Any]) -> str:
         return IssueCustomFieldTypes.PERIOD
     if "SimpleProjectCustomField" in project_field_type:
         return IssueCustomFieldTypes.INTEGER
-
-    issue_field_type = field_info.get("issue_field_type")
-    if issue_field_type in {
-        IssueCustomFieldTypes.SINGLE_ENUM,
-        IssueCustomFieldTypes.MULTI_ENUM,
-        IssueCustomFieldTypes.STATE,
-        IssueCustomFieldTypes.SINGLE_USER,
-        IssueCustomFieldTypes.MULTI_USER,
-        IssueCustomFieldTypes.SINGLE_VERSION,
-        IssueCustomFieldTypes.MULTI_VERSION,
-        IssueCustomFieldTypes.TEXT,
-        IssueCustomFieldTypes.PERIOD,
-        IssueCustomFieldTypes.INTEGER,
-    }:
-        return issue_field_type
 
     return IssueCustomFieldTypes.SINGLE_ENUM
 
@@ -1492,31 +1653,51 @@ async def build_project_field_payloads(
     auth_manager: AuthManager,
     project_ref: str,
     field_assignments: dict[str, list[str]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    existing_issue_field_shapes: Optional[dict[str, dict[str, Any]]] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]]]:
     if not field_assignments:
-        return [], []
+        return [], [], {}
 
     service = ProjectService(auth_manager)
     payloads: list[dict[str, Any]] = []
     previews: list[dict[str, Any]] = []
+    resolved_fields: dict[str, dict[str, Any]] = {}
+
+    metadata_result = await quiet_await(
+        service.get_project_custom_fields(project_ref, fields="id,canBeEmpty,field(name),$type")
+    )
+    if metadata_result["status"] != "success":
+        fail(metadata_result["message"])
+    project_field_metadata = {
+        ((field.get("field") or {}).get("name") or "").lower(): field
+        for field in metadata_result.get("data") or []
+        if (field.get("field") or {}).get("name")
+    }
 
     for field_name, values in field_assignments.items():
         result = await quiet_await(service.discover_custom_field(project_ref, field_name))
         if result["status"] != "success":
             fail(result["message"])
-        field_info = result["data"] or {}
+        field_info = dict(result["data"] or {})
+        project_field = project_field_metadata.get(field_name.lower()) or {}
+        if "canBeEmpty" in project_field:
+            field_info["can_be_empty"] = project_field.get("canBeEmpty")
+        if project_field.get("$type") and not field_info.get("project_field_type"):
+            field_info["project_field_type"] = project_field.get("$type")
+        field_info = apply_issue_field_shape_hint(field_info, (existing_issue_field_shapes or {}).get(field_name))
         payload = build_typed_field_payload(field_info, values)
         payloads.append(payload)
+        resolved_fields[field_name] = field_info
         previews.append(
             {
                 "name": payload["name"],
                 "type": payload["$type"],
                 "value": preview_field_value(payload),
-                "required": not (field_info.get("field_details") or {}).get("canBeEmpty", True),
+                "required": field_preview_is_required(field_info),
             }
         )
 
-    return payloads, previews
+    return payloads, previews, resolved_fields
 
 
 def build_issue_mutation_preview(
@@ -1568,6 +1749,112 @@ def build_issue_mutation_preview(
         "planned_actions": planned_actions,
         "warnings": [],
         "validation_errors": [],
+    }
+
+
+def normalize_server_error_message(error: Any) -> tuple[str, str]:
+    server_error = error.get("message") if isinstance(error, dict) else str(error)
+    message = server_error
+    if message.startswith("Unexpected error: "):
+        message = message[len("Unexpected error: ") :]
+    if message.startswith("Request failed with status 400: "):
+        message = message[len("Request failed with status 400: ") :]
+    return message, server_error
+
+
+async def build_issue_create_error_payload(
+    auth_manager: AuthManager,
+    prepared: dict[str, Any],
+    error: Any,
+) -> dict[str, Any]:
+    message, server_error = normalize_server_error_message(error)
+    operation = "create-subtask" if prepared.get("parent_issue_id") else "create-issue"
+    project = prepared.get("project") or {}
+    field_infos = prepared.get("field_infos") or {}
+    existing_issue_field_shapes = prepared.get("existing_issue_field_shapes") or {}
+    existing_issue_field_source = prepared.get("existing_issue_field_source")
+
+    mismatch_match = re.search(r"Incompatible field type: (?P<field_id>\d+-\d+)", message)
+    if mismatch_match:
+        project_field_id = mismatch_match.group("field_id")
+        field_name = None
+        prepared_issue_field_type = None
+        for name, field_info in field_infos.items():
+            if field_info.get("field_id") == project_field_id:
+                field_name = name
+                prepared_issue_field_type = field_info.get("issue_field_type")
+                break
+        observed_issue_field_type = None
+        if field_name:
+            observed_issue_field_type = (existing_issue_field_shapes.get(field_name) or {}).get("issue_field_type")
+        recovery_hint: dict[str, Any] = {
+            "action": "inspect_field_type",
+            "project_field_id": project_field_id,
+            "note": "Do not retry with alternate CLI spellings, enum ids, or JSON-like string values.",
+        }
+        if field_name:
+            recovery_hint["field_name"] = field_name
+        if prepared_issue_field_type:
+            recovery_hint["prepared_issue_field_type"] = prepared_issue_field_type
+        if observed_issue_field_type:
+            recovery_hint["observed_issue_field_type"] = observed_issue_field_type
+        if existing_issue_field_source:
+            recovery_hint["observed_from_issue_id"] = existing_issue_field_source
+        return {
+            "status": "error",
+            "dry_run": False,
+            "operation": operation,
+            "error_kind": "field_type_mismatch",
+            "message": message,
+            "server_error": server_error,
+            "recovery_hints": [recovery_hint],
+        }
+
+    required_match = re.search(r"(?P<field_name>.+?) is required$", message)
+    if required_match:
+        field_name = required_match.group("field_name")
+        project_field_id = None
+        project_lookup_ref = first_non_empty(project.get("shortName"), project.get("id"))
+        if project_lookup_ref:
+            project_service = ProjectService(auth_manager)
+            field_result = await quiet_await(project_service.discover_custom_field(project_lookup_ref, field_name))
+            if field_result["status"] == "success":
+                project_field_id = (field_result.get("data") or {}).get("field_id")
+
+        suggested_fields: list[str] = []
+        parent_issue_id = prepared.get("parent_issue_id")
+        if parent_issue_id:
+            _, parent_issue_fields = await fetch_issue_field_snapshot(auth_manager, parent_issue_id)
+            suggested_fields = [f"{field_name}={value}" for value in extract_issue_field_cli_values(parent_issue_fields.get(field_name))]
+
+        recovery_hint: dict[str, Any] = {
+            "action": "retry_with_fields",
+            "field_name": field_name,
+        }
+        if project_field_id:
+            recovery_hint["project_field_id"] = project_field_id
+        if parent_issue_id:
+            recovery_hint["parent_issue_id"] = parent_issue_id
+        if suggested_fields:
+            recovery_hint["fields"] = suggested_fields
+        return {
+            "status": "error",
+            "dry_run": False,
+            "operation": operation,
+            "error_kind": "field_required",
+            "message": message,
+            "server_error": server_error,
+            "recovery_hints": [recovery_hint],
+        }
+
+    return {
+        "status": "error",
+        "dry_run": False,
+        "operation": operation,
+        "error_kind": "server_error",
+        "message": message,
+        "server_error": server_error,
+        "recovery_hints": [],
     }
 
 

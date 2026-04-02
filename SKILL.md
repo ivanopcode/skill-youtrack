@@ -164,6 +164,14 @@ Rules:
 - Prefer `--dry-run` before raw command mutations when the effect is not obvious.
 - For board membership on explicit boards, use `board-add` and `board-remove` instead of guessing field updates.
 - Destructive operations still require explicit user intent.
+- For `issue create`, `issue create-subtask`, `board create-task`, and `board create-subtask`, a successful preview does not prove that the server will accept the payload.
+- If `--apply` returns structured `field_type_mismatch` or `field_required`, stop guessing alternate CLI syntax immediately.
+- Do not retry the same create intent by switching between `--field`, `--custom-field`, enum ids, `--Stream Core`, or JSON-like strings such as `Stream=["Core"]`.
+- If create fails with `field_type_mismatch`, inspect the structured error payload and reuse the exact field/type guidance from `ytx`.
+- If create-subtask fails with `field_required`, read the parent issue and use the structured `retry_with_fields` hint from `ytx` for one guided retry only.
+- Multi-value fields must be serialized as repeated `--field 'Name=Value'` arguments. Do not serialize multi-value fields as JSON text inside a single CLI value.
+- The guided retry may auto-copy only parent-derived classification fields. Do not auto-copy `Type`, `Priority`, `Assignee`, `State`, or `Initiator`.
+- If the guided retry still fails, report the `ytx` defect path and stop instead of continuing trial-and-error retries.
 
 ## Current Developer Resolution
 
