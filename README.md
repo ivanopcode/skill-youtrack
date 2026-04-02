@@ -66,9 +66,13 @@ the primary locale only.
 - `README.md`
   Human-facing documentation for installation, operation, and maintenance
 - `locales/metadata.json`
-  Install-time translation catalog for user-facing metadata
+  Install-time translation catalog for user-facing metadata and trigger catalog
+- `agents/openai.yaml`
+  Skill card metadata rendered during installation
 - `setup.sh`
   Supported installation entrypoint for global or per-repository installs
+- `scripts/setup_main.py`, `scripts/setup_support.py`
+  Standalone install helper for managed copies, metadata rendering, and agent wiring
 - `scripts/bootstrap.sh`
   Creates `.venv/` and installs Python dependencies
 - `scripts/yt`
@@ -144,6 +148,7 @@ This does the following:
 - renders installed metadata in the requested locale
 - links the skill into `~/.claude/skills/skill-youtrack`
 - links the skill into `~/.codex/skills/skill-youtrack`
+- registers the skill triggers in `~/.agents/.instructions/INSTRUCTIONS_SKILL_TRIGGERS.md`
 
 The source of truth remains the source directory:
 
@@ -173,12 +178,18 @@ This does the following:
 - renders installed metadata in the selected locale
 - links `<repo>/.claude/skills/skill-youtrack` to the local copy
 - links `<repo>/.codex/skills/skill-youtrack` to the local copy
+- provisions `<repo>/.agents/.instructions/INSTRUCTIONS_TESTING.md`
+- ensures `<repo>/AGENTS.md` references `@.agents/.instructions/INSTRUCTIONS_TESTING.md` from the `Modules` section
 - prefixes the local skill metadata with a locale-aware local marker so it is distinguishable in skill UIs
 
 The copied skill is intended to be tracked by the project repository.
 Its locale is project-fixed on first install. Later reruns reuse the stored
 locale. Passing a different locale for that project copy fails instead of
 silently rewriting tracked metadata.
+
+The source `skill-youtrack` repository itself does not need to contain a root
+`AGENTS.md`. The `AGENTS.md` and `.agents/.instructions` changes above apply to
+the target repository being wired in `local` mode, not to this source checkout.
 
 ### Locale Selection Rules
 

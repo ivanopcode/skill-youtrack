@@ -1,6 +1,16 @@
 ---
 name: skill-youtrack
 description: Use when Codex needs to work with one or more self-hosted or cloud YouTrack instances through local CLI commands instead of MCP, including named instance labels, macOS Keychain auth, scoped boards for large instances, board and sprint reads, issue search, comments, field updates, and explicit board or sprint membership through the bundled yt and ytx wrappers.
+triggers:
+  - "youtrack"
+  - "youtrack issue"
+  - "youtrack board"
+  - "youtrack sprint"
+  - "my tasks in youtrack"
+  - "youtrack board tasks"
+  - "youtrack issue comments"
+  - "update youtrack issue"
+  - "create youtrack issue"
 ---
 
 # skill-youtrack
