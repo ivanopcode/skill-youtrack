@@ -200,12 +200,16 @@ For task lists on a board or sprint:
 - include board name
 - include sprint name when available
 - include total matching issue count
-- list every matching issue id, summary, state, and type
+- if total matching issue count is 30 or fewer, list every matching issue id, summary, state, and type
+- if total matching issue count is greater than 30, list exactly the first 30 issues and explicitly say that the visible answer is truncated
 - include the full raw issue URL for every listed issue when the tool payload provides it
 - do not omit `Done` issues unless the user explicitly asks for only active or unresolved work
 - write the final answer in the user's language
 - localize the fixed labels and headers of the answer to the user's language
 - do not use English column headers like `Issue`, `Summary`, `State`, `Type`, or `URL` when the user asked in Russian
+- before finalizing, compare the number of listed issues in the answer against the tool payload:
+  - if `issue_count <= 30`, the answer must contain exactly `issue_count` listed issues
+  - if `issue_count > 30`, the answer must contain exactly 30 listed issues and an explicit truncation note
 
 For a single issue:
 
