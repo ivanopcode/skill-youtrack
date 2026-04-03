@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
-
-import sys
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -78,9 +78,43 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(args.issue_command, "create")
         self.assertEqual(args.project, "PMA")
 
+        args = parser.parse_args(
+            [
+                "issue",
+                "create-subtask",
+                "--parent",
+                "PMA-1",
+                "--summary",
+                "Test",
+                "--description-file",
+                "/tmp/task.md",
+            ]
+        )
+        self.assertEqual(args.issue_command, "create-subtask")
+        self.assertEqual(args.description_file, "/tmp/task.md")
+        self.assertFalse(args.description_stdin)
+
         args = parser.parse_args(["issue", "link", "--source", "PMA-1", "--target", "PMA-2", "--type", "Subtask"])
         self.assertEqual(args.issue_command, "link")
         self.assertEqual(args.link_type, "Subtask")
+
+    def test_resolve_description_input_reads_file(self) -> None:
+        with mock.patch("ytx.Path.read_text", return_value="# Summary\n") as read_text:
+            description = ytx.resolve_description_input(None, "/tmp/task.md", False)
+
+        self.assertEqual(description, "# Summary\n")
+        read_text.assert_called_once_with(encoding="utf-8")
+
+    def test_resolve_description_input_reads_stdin(self) -> None:
+        with mock.patch.object(sys, "stdin", io.StringIO("Line 1\nLine 2\n")):
+            description = ytx.resolve_description_input(None, None, True)
+
+        self.assertEqual(description, "Line 1\nLine 2\n")
+
+    def test_resolve_description_input_rejects_multiple_sources(self) -> None:
+        with mock.patch.object(ytx, "fail", side_effect=RuntimeError("ambiguous description input")):
+            with self.assertRaisesRegex(RuntimeError, "ambiguous description input"):
+                ytx.resolve_description_input("inline", "/tmp/task.md", False)
 
     def test_main_async_routes_board_commands_through_activated_auth_manager(self) -> None:
         context_manager = mock.MagicMock()
@@ -363,6 +397,52 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(prepared["preview"]["operation"], "create-subtask")
         self.assertEqual(len(prepared["preview"]["planned_actions"]), 3)
         self.assertEqual(prepared["existing_issue_field_source"], "PMA-21079")
+
+    def test_prepare_issue_create_operation_infers_project_from_parent_issue(self) -> None:
+        project = {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"}
+        issue_service = mock.Mock()
+        issue_service.get_issue = AsyncMock(
+            return_value={
+                "status": "success",
+                "data": {
+                    "project": project,
+                },
+            }
+        )
+
+        with mock.patch.object(ytx, "IssueService", return_value=issue_service), mock.patch.object(
+            ytx,
+            "resolve_project_context",
+            new=AsyncMock(return_value=project),
+        ), mock.patch.object(
+            ytx,
+            "build_project_field_payloads",
+            new=AsyncMock(return_value=([], [], {})),
+        ):
+            prepared = asyncio.run(
+                ytx.prepare_issue_create_operation(
+                    mock.sentinel.auth_manager,
+                    selection_label="wb",
+                    summary="Worktree recreate",
+                    description=None,
+                    project_ref=None,
+                    board_ref=None,
+                    use_current_sprint=False,
+                    parent_issue_id="PMA-21079",
+                    type_name=None,
+                    priority=None,
+                    assignee=None,
+                    mine=False,
+                    me_from=None,
+                    raw_fields=[],
+                )
+            )
+
+        self.assertEqual(prepared["project"]["id"], "77-344")
+        issue_service.get_issue.assert_awaited_once_with(
+            "PMA-21079",
+            fields="project(id,shortName,name)",
+        )
 
     def test_build_project_field_payloads_prefers_existing_issue_multi_enum_shape_and_requiredness(self) -> None:
         service = mock.Mock()

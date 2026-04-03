@@ -171,6 +171,11 @@ Rules:
 - Prefer `--dry-run` before raw command mutations when the effect is not obvious.
 - For board membership on explicit boards, use `board-add` and `board-remove` instead of guessing field updates.
 - Destructive operations still require explicit user intent.
+- For `issue create-subtask` and `board create-subtask`, prefer explicit `--board` or `--project` when the surrounding workflow already identifies the target board or project.
+- `ytx issue create-subtask` can infer the project from `--parent`, but treat that as a fallback, not as a reason to guess board or project context.
+- Do not pass long or multiline Markdown descriptions inline through `--description`.
+- Use `--description-file <path>` or `--description-stdin` for long descriptions, rich Markdown, or text that may contain shell-sensitive quoting.
+- Reserve inline `--description` for short shell-safe text.
 - For `issue create`, `issue create-subtask`, `board create-task`, and `board create-subtask`, a successful preview does not prove that the server will accept the payload.
 - If `--apply` returns structured `field_type_mismatch` or `field_required`, stop guessing alternate CLI syntax immediately.
 - Do not retry the same create intent by switching between `--field`, `--custom-field`, enum ids, `--Stream Core`, or JSON-like strings such as `Stream=["Core"]`.

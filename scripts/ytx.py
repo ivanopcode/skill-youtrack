@@ -906,6 +906,52 @@ async def run_issue_command(
     )
 
 
+def resolve_description_input(
+    inline_description: Optional[str],
+    description_file: Optional[str],
+    description_stdin: bool,
+) -> Optional[str]:
+    provided_sources = sum(
+        [
+            inline_description is not None,
+            bool(description_file),
+            bool(description_stdin),
+        ]
+    )
+    if provided_sources > 1:
+        fail("Use only one of --description, --description-file, or --description-stdin")
+    if description_file:
+        try:
+            return Path(description_file).read_text(encoding="utf-8")
+        except OSError as error:
+            fail(f"Failed to read description file {description_file}: {error}")
+    if description_stdin:
+        return sys.stdin.read()
+    return inline_description
+
+
+async def infer_project_ref_from_parent_issue(
+    auth_manager: AuthManager,
+    parent_issue_id: str,
+) -> Optional[str]:
+    issue_service = IssueService(auth_manager)
+    result = await quiet_await(
+        issue_service.get_issue(
+            parent_issue_id,
+            fields="project(id,shortName,name)",
+        )
+    )
+    if result["status"] != "success":
+        return None
+    parent_issue = result.get("data") or {}
+    project = parent_issue.get("project") or {}
+    return first_non_empty(
+        project.get("shortName"),
+        project.get("id"),
+        project.get("name"),
+    )
+
+
 async def prepare_issue_create_operation(
     auth_manager: AuthManager,
     *,
@@ -936,15 +982,26 @@ async def prepare_issue_create_operation(
             sprint_name = current_sprint["name"]
 
     effective_project_ref = project_ref
+    board_project_ref = None
     if not effective_project_ref and board:
-        effective_project_ref = infer_project_ref_from_board(board)
-        if not effective_project_ref:
-            fail(
-                "The selected board is attached to multiple projects. "
-                "Specify --project explicitly."
-            )
+        board_project_ref = infer_project_ref_from_board(board)
+        if board_project_ref:
+            effective_project_ref = board_project_ref
+    if not effective_project_ref and parent_issue_id:
+        effective_project_ref = await infer_project_ref_from_parent_issue(
+            auth_manager,
+            parent_issue_id,
+        )
+    if not effective_project_ref and board and not board_project_ref:
+        fail(
+            "The selected board is attached to multiple projects. "
+            "Specify --project explicitly."
+        )
     if not effective_project_ref:
-        fail("Missing project. Use --project or provide --board for a single-project board.")
+        fail(
+            "Missing project. Use --project, provide --board for a single-project board, "
+            "or pass --parent so create-subtask can infer the project from the parent issue."
+        )
 
     project = await resolve_project_context(auth_manager, effective_project_ref)
 
@@ -1331,11 +1388,16 @@ async def handle_board(
         return
 
     if args.board_command in {"create-task", "create-subtask"}:
+        description = resolve_description_input(
+            args.description,
+            getattr(args, "description_file", None),
+            getattr(args, "description_stdin", False),
+        )
         prepared = await prepare_issue_create_operation(
             auth_manager,
             selection_label=selection_label,
             summary=args.summary,
-            description=args.description,
+            description=description,
             project_ref=args.project,
             board_ref=args.board,
             use_current_sprint=args.current_sprint,
@@ -1938,11 +2000,16 @@ async def handle_issue(
         return
 
     if args.issue_command in {"create", "create-subtask"}:
+        description = resolve_description_input(
+            args.description,
+            getattr(args, "description_file", None),
+            getattr(args, "description_stdin", False),
+        )
         prepared = await prepare_issue_create_operation(
             auth_manager,
             selection_label=selection_label,
             summary=args.summary,
-            description=args.description,
+            description=description,
             project_ref=args.project,
             board_ref=args.board,
             use_current_sprint=args.current_sprint,
@@ -2203,6 +2270,8 @@ def build_parser() -> argparse.ArgumentParser:
     board_create_task.add_argument("--project")
     board_create_task.add_argument("--summary", required=True)
     board_create_task.add_argument("--description")
+    board_create_task.add_argument("--description-file")
+    board_create_task.add_argument("--description-stdin", action="store_true")
     board_create_task.add_argument("--type")
     board_create_task.add_argument("--priority")
     board_create_task.add_argument("--assignee")
@@ -2221,6 +2290,8 @@ def build_parser() -> argparse.ArgumentParser:
     board_create_subtask.add_argument("--parent-issue-id", "--parent", dest="parent_issue_id", required=True)
     board_create_subtask.add_argument("--summary", required=True)
     board_create_subtask.add_argument("--description")
+    board_create_subtask.add_argument("--description-file")
+    board_create_subtask.add_argument("--description-stdin", action="store_true")
     board_create_subtask.add_argument("--type")
     board_create_subtask.add_argument("--priority")
     board_create_subtask.add_argument("--assignee")
@@ -2247,6 +2318,8 @@ def build_parser() -> argparse.ArgumentParser:
     issue_create.add_argument("--project")
     issue_create.add_argument("--summary", required=True)
     issue_create.add_argument("--description")
+    issue_create.add_argument("--description-file")
+    issue_create.add_argument("--description-stdin", action="store_true")
     issue_create.add_argument("--type")
     issue_create.add_argument("--priority")
     issue_create.add_argument("--assignee")
@@ -2265,6 +2338,8 @@ def build_parser() -> argparse.ArgumentParser:
     issue_create_subtask.add_argument("--project")
     issue_create_subtask.add_argument("--summary", required=True)
     issue_create_subtask.add_argument("--description")
+    issue_create_subtask.add_argument("--description-file")
+    issue_create_subtask.add_argument("--description-stdin", action="store_true")
     issue_create_subtask.add_argument("--type")
     issue_create_subtask.add_argument("--priority")
     issue_create_subtask.add_argument("--assignee")
