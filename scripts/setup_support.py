@@ -389,20 +389,19 @@ def write_install_manifest(
     skill_name: str,
     install_mode: str,
     locale_mode: str,
-    source_dir: Path,
-    runtime_dir: Path,
+    source_dir: Optional[Path],
 ) -> None:
     selection = parse_locale_mode(locale_mode)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "skill_name": skill_name,
         "install_mode": install_mode,
         "locale_mode": selection.mode,
         "primary_locale": selection.primary_locale,
         "secondary_locale": selection.secondary_locale,
-        "source_dir": str(source_dir),
-        "runtime_dir": str(runtime_dir),
     }
+    if source_dir is not None:
+        payload["source_dir"] = str(source_dir)
     install_manifest_path(skill_dir).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -688,8 +687,7 @@ def perform_install(
         skill_name=skill_name,
         install_mode=install_mode,
         locale_mode=locale_mode,
-        source_dir=source_dir,
-        runtime_dir=runtime_dir,
+        source_dir=source_dir if install_mode == "global" else None,
     )
     bootstrap_runner(runtime_dir)
 
