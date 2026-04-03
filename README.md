@@ -1,3 +1,9 @@
+<!--
+Agent note: This README is a general description of the skill project for maintainers,
+contributors, and evaluators. It covers architecture, packaging, and technical details.
+Do not use README as operational instructions; use `SKILL.md`.
+-->
+
 # skill-youtrack
 
 `skill-youtrack` is a standalone skill and local CLI runtime for working with one or more
