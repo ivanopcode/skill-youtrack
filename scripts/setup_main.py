@@ -49,9 +49,16 @@ def print_result(result: InstallResult) -> None:
         print(f"  Project copy: {result.runtime_dir}")
     print(f"  Claude skill link: {result.claude_link}")
     print(f"  Codex skill link: {result.codex_link}")
+    if result.yt_shim:
+        print(f"  Shell command shim: {result.yt_shim}")
+    if result.ytx_shim:
+        print(f"  Shell command shim: {result.ytx_shim}")
     print()
     print("Next step:")
-    print(f"  {result.runtime_dir}/scripts/yt --instance <label> auth login --base-url https://your-youtrack-host")
+    if result.yt_shim:
+        print(f"  {result.yt_shim} --instance <label> auth login --base-url https://your-youtrack-host")
+    else:
+        print(f"  {result.runtime_dir}/scripts/yt --instance <label> auth login --base-url https://your-youtrack-host")
 
 
 def main(argv: list[str] | None = None) -> None:

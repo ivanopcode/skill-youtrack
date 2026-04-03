@@ -171,6 +171,11 @@ Rules:
 - Prefer `--dry-run` before raw command mutations when the effect is not obvious.
 - For board membership on explicit boards, use `board-add` and `board-remove` instead of guessing field updates.
 - Destructive operations still require explicit user intent.
+- If the user gives a file path for the task body, read that file and use it as the issue description. Do not create the issue first and plan to fill the description later.
+- For file-backed task creation, use `--description-file <path>` instead of pasting multiline text into `--description`.
+- Do not create a task or subtask with an empty description. Treat missing description as a blocking error for the workflow.
+- For board- or sprint-centric task entry, prefer `board create-task` or `board create-subtask` over `issue create` and `issue create-subtask`.
+- If the request is about the current sprint, use `--current-sprint` so the issue is added to the current sprint during the create flow.
 - For `issue create-subtask` and `board create-subtask`, prefer explicit `--board` or `--project` when the surrounding workflow already identifies the target board or project.
 - `ytx issue create-subtask` can infer the project from `--parent`, but treat that as a fallback, not as a reason to guess board or project context.
 - Do not pass long or multiline Markdown descriptions inline through `--description`.
@@ -178,14 +183,14 @@ Rules:
 - Reserve inline `--description` for short shell-safe text.
 - For `issue create`, `issue create-subtask`, `board create-task`, and `board create-subtask`, a successful preview does not prove that the server will accept the payload.
 - If `--apply` returns structured `field_type_mismatch` or `field_required`, stop guessing alternate CLI syntax immediately.
-- Do not retry the same create intent by switching between `--field`, `--custom-field`, enum ids, `--Stream Core`, or JSON-like strings such as `Stream=["Core"]`.
+- Do not retry the same create intent by switching between `--field`, `--custom-field`, enum ids, direct flag forms, or JSON-like strings such as `Field=["Alpha"]`.
 - If create fails with `field_type_mismatch`, inspect the structured error payload and reuse the exact field/type guidance from `ytx`.
 - If create-subtask fails with `field_required`, read the parent issue and use the structured `retry_with_fields` hint from `ytx` for one guided retry only.
 - Multi-value fields must be serialized as repeated `--field 'Name=Value'` arguments. Do not serialize multi-value fields as JSON text inside a single CLI value.
 - The guided retry may auto-copy only parent-derived classification fields. Do not auto-copy `Type`, `Priority`, `Assignee`, `State`, or `Initiator`.
 - If the guided retry still fails, report the `ytx` defect path and stop instead of continuing trial-and-error retries.
 - For task creation and subtask creation, `Assignee` and `Initiator` are mandatory planning inputs even if YouTrack itself can accept a more partial payload.
-- Fast path: if the user intent clearly means "assign to me", use `Assignee=me` resolution without asking.
+- Fast path: if the user intent clearly means the task belongs to the current developer, set both `--assignee me` and `--initiator me` without asking.
 - For any assignee or initiator other than `me`, do not guess from display names alone.
 - First try to resolve exact usernames from repo context:
   - `AGENTS.md` or equivalent repo-local agent context, if present
@@ -193,6 +198,7 @@ Rules:
 - If repo context does not provide an exact mapping, use recent git history only as a weak fallback signal, not as authority.
 - If exact assignee or initiator usernames still cannot be determined confidently, ask the user before creating the task.
 - Do not create a task with an ambiguous assignee or initiator and hope to fix it later.
+- If the user gives only a bare issue number such as `21079`, prefer the scoped board or explicit project context to resolve it to a readable id like `<SHORTNAME>-21079` before falling back to broader search.
 
 ## Current Developer Resolution
 
@@ -265,6 +271,8 @@ Install globally:
 ```bash
 setup.sh global --locale <locale>
 ```
+
+Global install also exposes shell shims at `~/.local/bin/yt` and `~/.local/bin/ytx` when those paths are free.
 
 Install into one repository:
 

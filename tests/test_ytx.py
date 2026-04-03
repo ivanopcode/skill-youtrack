@@ -20,11 +20,11 @@ class YtxTest(unittest.TestCase):
     def sample_issue(self) -> dict[str, object]:
         return {
             "id": "92-1",
-            "idReadable": "PMA-21079",
+            "idReadable": "PROJ-21079",
             "summary": "Example issue",
             "description": "Example description",
             "resolved": None,
-            "project": {"name": "Partners Mobile App"},
+            "project": {"name": "Example Project"},
             "assignee": {"login": "oparin.ivan3", "fullName": "Иван Опарин"},
             "customFields": [
                 {"name": "State", "value": {"name": "In Progress"}},
@@ -37,8 +37,8 @@ class YtxTest(unittest.TestCase):
     def sample_board(self) -> dict[str, object]:
         return {
             "id": "83-2561",
-            "name": "PMA iOS Core",
-            "projects": [{"id": "77-344", "name": "Partners Mobile App", "shortName": "PMA"}],
+            "name": "Example Board",
+            "projects": [{"id": "77-344", "name": "Example Project", "shortName": "PROJ"}],
             "currentSprint": {"id": "84-96818", "name": "Спринт 47"},
             "sprints": [],
         }
@@ -70,20 +70,20 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(args.board_command, "tasks")
         self.assertEqual(args.assignee, "me")
 
-        args = parser.parse_args(["board", "create-subtask", "--parent", "PMA-1", "--summary", "Test"])
+        args = parser.parse_args(["board", "create-subtask", "--parent", "PROJ-1", "--summary", "Test"])
         self.assertEqual(args.board_command, "create-subtask")
-        self.assertEqual(args.parent_issue_id, "PMA-1")
+        self.assertEqual(args.parent_issue_id, "PROJ-1")
 
-        args = parser.parse_args(["issue", "create", "--project", "PMA", "--summary", "Test"])
+        args = parser.parse_args(["issue", "create", "--project", "PROJ", "--summary", "Test"])
         self.assertEqual(args.issue_command, "create")
-        self.assertEqual(args.project, "PMA")
+        self.assertEqual(args.project, "PROJ")
 
         args = parser.parse_args(
             [
                 "issue",
                 "create-subtask",
                 "--parent",
-                "PMA-1",
+                "PROJ-1",
                 "--summary",
                 "Test",
                 "--description-file",
@@ -93,8 +93,15 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(args.issue_command, "create-subtask")
         self.assertEqual(args.description_file, "/tmp/task.md")
         self.assertFalse(args.description_stdin)
+        self.assertIsNone(args.initiator)
 
-        args = parser.parse_args(["issue", "link", "--source", "PMA-1", "--target", "PMA-2", "--type", "Subtask"])
+        args = parser.parse_args(
+            ["board", "create-task", "--summary", "Test", "--assignee", "me", "--initiator", "me"]
+        )
+        self.assertEqual(args.board_command, "create-task")
+        self.assertEqual(args.initiator, "me")
+
+        args = parser.parse_args(["issue", "link", "--source", "PROJ-1", "--target", "PROJ-2", "--type", "Subtask"])
         self.assertEqual(args.issue_command, "link")
         self.assertEqual(args.link_type, "Subtask")
 
@@ -115,6 +122,26 @@ class YtxTest(unittest.TestCase):
         with mock.patch.object(ytx, "fail", side_effect=RuntimeError("ambiguous description input")):
             with self.assertRaisesRegex(RuntimeError, "ambiguous description input"):
                 ytx.resolve_description_input("inline", "/tmp/task.md", False)
+
+    def test_normalize_issue_reference_uses_scoped_board_project_for_bare_number(self) -> None:
+        with mock.patch.object(
+            ytx,
+            "load_scoped_boards",
+            new=AsyncMock(return_value=(["83-2561"], [self.sample_board()])),
+        ), mock.patch.object(
+            ytx,
+            "resolve_project_context",
+            new=AsyncMock(return_value={"id": "77-344", "shortName": "PROJ", "name": "Example Project"}),
+        ):
+            normalized = asyncio.run(
+                ytx.normalize_issue_reference(
+                    mock.sentinel.auth_manager,
+                    "wb",
+                    "21079",
+                )
+            )
+
+        self.assertEqual(normalized, "PROJ-21079")
 
     def test_main_async_routes_board_commands_through_activated_auth_manager(self) -> None:
         context_manager = mock.MagicMock()
@@ -176,10 +203,10 @@ class YtxTest(unittest.TestCase):
             base_url="https://youtrack.example.com/",
         )
 
-        self.assertEqual(normalized["id"], "PMA-21079")
+        self.assertEqual(normalized["id"], "PROJ-21079")
         self.assertEqual(
             normalized["url"],
-            "https://youtrack.example.com/issue/PMA-21079",
+            "https://youtrack.example.com/issue/PROJ-21079",
         )
 
     def test_normalize_issue_omits_url_when_base_url_is_missing(self) -> None:
@@ -194,7 +221,7 @@ class YtxTest(unittest.TestCase):
                 "status": "success",
                 "data": {
                     "id": "83-2561",
-                    "name": "PMA iOS Core",
+                    "name": "Example Board",
                     "currentSprint": {"id": "84-96818", "name": "Спринт 47"},
                 },
             }
@@ -235,7 +262,7 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(payload["issue_count"], 1)
         self.assertEqual(
             payload["issues"][0]["url"],
-            "https://youtrack.example.com/issue/PMA-21079",
+            "https://youtrack.example.com/issue/PROJ-21079",
         )
 
     def test_resolve_target_board_uses_single_scoped_board_when_board_omitted(self) -> None:
@@ -268,10 +295,10 @@ class YtxTest(unittest.TestCase):
                 "issue_field_type": "MultiEnumIssueCustomField",
                 "bundle_element_type": "EnumBundleElement",
             },
-            ["Core", "RKI"],
+            ["Alpha", "Beta"],
         )
         self.assertEqual(multi_enum["$type"], "MultiEnumIssueCustomField")
-        self.assertEqual([item["name"] for item in multi_enum["value"]], ["Core", "RKI"])
+        self.assertEqual([item["name"] for item in multi_enum["value"]], ["Alpha", "Beta"])
 
         period = ytx.build_typed_field_payload(
             {"field_name": "Pre-assessment", "issue_field_type": "PeriodIssueCustomField"},
@@ -290,10 +317,10 @@ class YtxTest(unittest.TestCase):
     def test_build_board_tasks_payload_filters_initiator_and_active_only(self) -> None:
         board = self.sample_board()
         matching_issue = self.sample_issue()
-        done_issue = {**self.sample_issue(), "idReadable": "PMA-999", "resolved": 123}
+        done_issue = {**self.sample_issue(), "idReadable": "PROJ-999", "resolved": 123}
         other_initiator = {
             **self.sample_issue(),
-            "idReadable": "PMA-998",
+            "idReadable": "PROJ-998",
             "customFields": [
                 {"name": "State", "value": {"name": "In Progress"}},
                 {"name": "Type", "value": {"name": "Task"}},
@@ -312,7 +339,7 @@ class YtxTest(unittest.TestCase):
             new=AsyncMock(
                 return_value={
                     "board_id": "83-2561",
-                    "board_name": "PMA iOS Core",
+                    "board_name": "Example Board",
                     "sprint_id": "84-96818",
                     "sprint_name": "Спринт 47",
                     "filters": {"assignee": None},
@@ -338,20 +365,20 @@ class YtxTest(unittest.TestCase):
             )
 
         self.assertEqual(payload["issue_count"], 1)
-        self.assertEqual(payload["issues"][0]["id"], "PMA-21079")
+        self.assertEqual(payload["issues"][0]["id"], "PROJ-21079")
         self.assertEqual(payload["board_url"], "https://youtrack.example.com/agiles/83-2561/current")
 
     def test_prepare_issue_create_operation_builds_preview(self) -> None:
         board = self.sample_board()
-        project = {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"}
+        project = {"id": "77-344", "shortName": "PROJ", "name": "Example Project"}
         field_payloads = [
             {
                 "$type": "MultiEnumIssueCustomField",
                 "name": "Stream",
-                "value": [{"$type": "EnumBundleElement", "name": "Core"}],
+                "value": [{"$type": "EnumBundleElement", "name": "Alpha"}],
             }
         ]
-        field_previews = [{"name": "Stream", "type": "MultiEnumIssueCustomField", "value": ["Core"], "required": True}]
+        field_previews = [{"name": "Stream", "type": "MultiEnumIssueCustomField", "value": ["Alpha"], "required": True}]
 
         with mock.patch.object(
             ytx,
@@ -372,7 +399,7 @@ class YtxTest(unittest.TestCase):
         ), mock.patch.object(
             ytx,
             "resolve_existing_issue_field_context",
-            new=AsyncMock(return_value=({"Stream": {"issue_field_type": "MultiEnumIssueCustomField"}}, {}, "PMA-21079")),
+            new=AsyncMock(return_value=({"Stream": {"issue_field_type": "MultiEnumIssueCustomField"}}, {}, "PROJ-21079")),
         ):
             prepared = asyncio.run(
                 ytx.prepare_issue_create_operation(
@@ -383,10 +410,11 @@ class YtxTest(unittest.TestCase):
                     project_ref=None,
                     board_ref=None,
                     use_current_sprint=True,
-                    parent_issue_id="PMA-21079",
+                    parent_issue_id="PROJ-21079",
                     type_name="Task",
                     priority="Normal",
                     assignee=None,
+                    initiator="me",
                     mine=True,
                     me_from="git-email-localpart",
                     raw_fields=[],
@@ -396,10 +424,10 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(prepared["issue_payload"]["project"]["id"], "77-344")
         self.assertEqual(prepared["preview"]["operation"], "create-subtask")
         self.assertEqual(len(prepared["preview"]["planned_actions"]), 3)
-        self.assertEqual(prepared["existing_issue_field_source"], "PMA-21079")
+        self.assertEqual(prepared["existing_issue_field_source"], "PROJ-21079")
 
     def test_prepare_issue_create_operation_infers_project_from_parent_issue(self) -> None:
-        project = {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"}
+        project = {"id": "77-344", "shortName": "PROJ", "name": "Example Project"}
         issue_service = mock.Mock()
         issue_service.get_issue = AsyncMock(
             return_value={
@@ -428,10 +456,11 @@ class YtxTest(unittest.TestCase):
                     project_ref=None,
                     board_ref=None,
                     use_current_sprint=False,
-                    parent_issue_id="PMA-21079",
+                    parent_issue_id="PROJ-21079",
                     type_name=None,
                     priority=None,
                     assignee=None,
+                    initiator=None,
                     mine=False,
                     me_from=None,
                     raw_fields=[],
@@ -440,9 +469,98 @@ class YtxTest(unittest.TestCase):
 
         self.assertEqual(prepared["project"]["id"], "77-344")
         issue_service.get_issue.assert_awaited_once_with(
-            "PMA-21079",
+            "PROJ-21079",
             fields="project(id,shortName,name)",
         )
+
+    def test_prepare_issue_create_operation_normalizes_bare_parent_issue_number(self) -> None:
+        project = {"id": "77-344", "shortName": "PROJ", "name": "Example Project"}
+        board = self.sample_board()
+
+        with mock.patch.object(
+            ytx,
+            "resolve_target_board",
+            new=AsyncMock(return_value=(board, ["83-2561"])),
+        ), mock.patch.object(
+            ytx,
+            "IssueService",
+        ) as issue_service_cls, mock.patch.object(
+            ytx,
+            "resolve_project_context",
+            new=AsyncMock(return_value=project),
+        ), mock.patch.object(
+            ytx,
+            "build_project_field_payloads",
+            new=AsyncMock(return_value=([], [], {})),
+        ):
+            issue_service = issue_service_cls.return_value
+            issue_service.get_issue = AsyncMock(
+                return_value={
+                    "status": "success",
+                    "data": {"project": project},
+                }
+            )
+            prepared = asyncio.run(
+                ytx.prepare_issue_create_operation(
+                    mock.sentinel.auth_manager,
+                    selection_label="wb",
+                    summary="Worktree recreate",
+                    description="Desc",
+                    project_ref=None,
+                    board_ref=None,
+                    use_current_sprint=False,
+                    parent_issue_id="21079",
+                    type_name=None,
+                    priority=None,
+                    assignee=None,
+                    initiator=None,
+                    mine=False,
+                    me_from="git-email-localpart",
+                    raw_fields=[],
+                    resolve_board_context=True,
+                )
+            )
+
+        self.assertEqual(prepared["parent_issue_id"], "PROJ-21079")
+
+    def test_prepare_issue_create_operation_reports_local_validation_errors(self) -> None:
+        project = {"id": "77-344", "shortName": "PROJ", "name": "Example Project"}
+
+        with mock.patch.object(
+            ytx,
+            "resolve_project_context",
+            new=AsyncMock(return_value=project),
+        ), mock.patch.object(
+            ytx,
+            "build_project_field_payloads",
+            new=AsyncMock(return_value=([], [], {})),
+        ):
+            prepared = asyncio.run(
+                ytx.prepare_issue_create_operation(
+                    mock.sentinel.auth_manager,
+                    selection_label="wb",
+                    summary="Worktree recreate",
+                    description=None,
+                    project_ref="PROJ",
+                    board_ref=None,
+                    use_current_sprint=False,
+                    parent_issue_id=None,
+                    type_name=None,
+                    priority=None,
+                    assignee=None,
+                    initiator=None,
+                    mine=False,
+                    me_from=None,
+                    raw_fields=[],
+                )
+            )
+
+        codes = [item["code"] for item in prepared["validation_errors"]]
+        self.assertEqual(
+            codes,
+            ["description_required", "assignee_required", "initiator_required"],
+        )
+        self.assertEqual(prepared["warnings"][0]["code"], "no_board_membership")
 
     def test_build_project_field_payloads_prefers_existing_issue_multi_enum_shape_and_requiredness(self) -> None:
         service = mock.Mock()
@@ -476,8 +594,8 @@ class YtxTest(unittest.TestCase):
             payloads, previews, field_infos = asyncio.run(
                 ytx.build_project_field_payloads(
                     mock.sentinel.auth_manager,
-                    "PMA",
-                    {"Stream": ["Core"]},
+                    "PROJ",
+                    {"Stream": ["Alpha"]},
                     existing_issue_field_shapes={
                         "Stream": {
                             "issue_field_type": "MultiEnumIssueCustomField",
@@ -495,7 +613,7 @@ class YtxTest(unittest.TestCase):
     def test_apply_issue_create_operation_returns_structured_field_type_mismatch_error(self) -> None:
         prepared = {
             "issue_payload": {"project": {"id": "77-344"}, "summary": "Worktree setup"},
-            "project": {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"},
+            "project": {"id": "77-344", "shortName": "PROJ", "name": "Example Project"},
             "field_infos": {
                 "Stream": {
                     "field_id": "78-2891",
@@ -505,7 +623,7 @@ class YtxTest(unittest.TestCase):
             "existing_issue_field_shapes": {
                 "Stream": {"issue_field_type": "MultiEnumIssueCustomField"}
             },
-            "existing_issue_field_source": "PMA-21079",
+            "existing_issue_field_source": "PROJ-21079",
         }
 
         workflow_service = mock.Mock()
@@ -531,8 +649,8 @@ class YtxTest(unittest.TestCase):
 
     def test_build_issue_create_error_payload_returns_parent_field_hint_for_required_field(self) -> None:
         prepared = {
-            "project": {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"},
-            "parent_issue_id": "PMA-21079",
+            "project": {"id": "77-344", "shortName": "PROJ", "name": "Example Project"},
+            "parent_issue_id": "PROJ-21079",
         }
         service = mock.Mock()
         service.discover_custom_field = AsyncMock(
@@ -568,8 +686,8 @@ class YtxTest(unittest.TestCase):
 
     def test_build_issue_create_error_payload_serializes_multi_value_parent_field_hints(self) -> None:
         prepared = {
-            "project": {"id": "77-344", "shortName": "PMA", "name": "Partners Mobile App"},
-            "parent_issue_id": "PMA-21079",
+            "project": {"id": "77-344", "shortName": "PROJ", "name": "Example Project"},
+            "parent_issue_id": "PROJ-21079",
         }
         service = mock.Mock()
         service.discover_custom_field = AsyncMock(
@@ -585,7 +703,7 @@ class YtxTest(unittest.TestCase):
                     {
                         "Stream": {
                             "name": "Stream",
-                            "value": [{"name": "Core"}, {"name": "RKI"}],
+                            "value": [{"name": "Alpha"}, {"name": "Beta"}],
                         }
                     },
                 )
@@ -600,14 +718,15 @@ class YtxTest(unittest.TestCase):
             )
 
         self.assertEqual(result["error_kind"], "field_required")
-        self.assertEqual(result["recovery_hints"][0]["fields"], ["Stream=Core", "Stream=RKI"])
+        self.assertEqual(result["recovery_hints"][0]["fields"], ["Stream=Alpha", "Stream=Beta"])
 
     def test_apply_issue_create_operation_returns_partial_success_when_link_fails(self) -> None:
         prepared = {
             "issue_payload": {"project": {"id": "77-344"}, "summary": "Worktree setup"},
-            "parent_issue_id": "PMA-21079",
+            "parent_issue_id": "PROJ-21079",
             "board": self.sample_board(),
             "sprint_name": "Спринт 47",
+            "warnings": [],
         }
 
         workflow_service = mock.Mock()
@@ -623,9 +742,9 @@ class YtxTest(unittest.TestCase):
                 "build_issue_brief_payload",
                 new=AsyncMock(
                     return_value={
-                        "id": "PMA-22199",
+                        "id": "PROJ-22199",
                         "summary": "Worktree setup",
-                        "url": "https://youtrack.example.com/issue/PMA-22199",
+                        "url": "https://youtrack.example.com/issue/PROJ-22199",
                     }
                 ),
             ):
@@ -638,7 +757,34 @@ class YtxTest(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "partial_success")
-        self.assertEqual(result["created_issue"]["id"], "PMA-22199")
+        self.assertEqual(result["created_issue"]["id"], "PROJ-22199")
+        issue_service.create_link.assert_awaited_once_with("PROJ-21079", "PROJ-22199", "Subtask")
+
+    def test_apply_issue_create_operation_returns_validation_failed_without_mutation(self) -> None:
+        prepared = {
+            "issue_payload": {"project": {"id": "77-344"}, "summary": "Worktree setup"},
+            "validation_errors": [{"code": "description_required", "field": "description"}],
+            "warnings": [{"code": "no_board_membership"}],
+        }
+
+        workflow_service = mock.Mock()
+        workflow_service.create_issue = AsyncMock()
+
+        with mock.patch.object(ytx, "WorkflowIssueService", return_value=workflow_service), \
+            mock.patch.object(ytx, "IssueService"), \
+            mock.patch.object(ytx, "IssueManager"):
+            result = asyncio.run(
+                ytx.apply_issue_create_operation(
+                    mock.sentinel.auth_manager,
+                    prepared,
+                    base_url="https://youtrack.example.com",
+                )
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_kind"], "validation_failed")
+        self.assertEqual(result["validation_errors"][0]["code"], "description_required")
+        workflow_service.create_issue.assert_not_called()
 
     def test_normalize_issue_can_omit_description_and_custom_fields_for_list_payloads(self) -> None:
         payload = ytx.normalize_issue(
@@ -666,7 +812,7 @@ class YtxTest(unittest.TestCase):
             new=AsyncMock(
                 return_value={
                     "board_id": "83-2561",
-                    "board_name": "PMA iOS Core",
+                    "board_name": "Example Board",
                     "sprint_id": "84-96818",
                     "sprint_name": "Спринт 47",
                     "filters": {"assignee": "oparin.ivan3"},
@@ -699,8 +845,8 @@ class YtxTest(unittest.TestCase):
         payload = asyncio.run(
             ytx.preview_or_apply_issue_link(
                 mock.sentinel.auth_manager,
-                source_issue_id="PMA-1",
-                target_issue_id="PMA-2",
+                source_issue_id="PROJ-1",
+                target_issue_id="PROJ-2",
                 link_type="Subtask",
                 apply=False,
             )
@@ -710,7 +856,7 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(payload["planned_actions"][0]["type"], "link_issue")
 
     def test_handle_issue_show_includes_url(self) -> None:
-        args = mock.Mock(issue_command="show", issue_id="PMA-21079", raw=False)
+        args = mock.Mock(issue_command="show", issue_id="PROJ-21079", raw=False)
 
         with mock.patch.object(
             ytx,
@@ -726,10 +872,10 @@ class YtxTest(unittest.TestCase):
             )
 
         payload = dump.call_args.args[0]
-        self.assertEqual(payload["url"], "https://youtrack.example.com/issue/PMA-21079")
+        self.assertEqual(payload["url"], "https://youtrack.example.com/issue/PROJ-21079")
 
     def test_handle_issue_show_raw_does_not_inject_url(self) -> None:
-        args = mock.Mock(issue_command="show", issue_id="PMA-21079", raw=True)
+        args = mock.Mock(issue_command="show", issue_id="PROJ-21079", raw=True)
 
         with mock.patch.object(
             ytx,
@@ -765,7 +911,7 @@ class YtxTest(unittest.TestCase):
             )
 
         payload = dump.call_args.args[0]
-        self.assertEqual(payload[0]["url"], "https://youtrack.example.com/issue/PMA-21079")
+        self.assertEqual(payload[0]["url"], "https://youtrack.example.com/issue/PROJ-21079")
 
 
 if __name__ == "__main__":

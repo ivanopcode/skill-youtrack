@@ -363,13 +363,13 @@ inspect the preview envelope, and then rerun with `--apply`:
 ~/agents/skills/skill-youtrack/scripts/ytx board create-subtask \
   --parent <issue-id> \
   --summary "Task summary" \
-  --field "Stream=Core" \
+  --field "Label=Alpha" \
   --current-sprint
 
 ~/agents/skills/skill-youtrack/scripts/ytx board create-subtask \
   --parent <issue-id> \
   --summary "Task summary" \
-  --field "Stream=Core" \
+  --field "Label=Alpha" \
   --current-sprint \
   --apply
 ```

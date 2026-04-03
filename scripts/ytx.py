@@ -16,6 +16,9 @@ from typing import Any, Optional
 
 logging.disable(logging.CRITICAL)
 
+READABLE_ISSUE_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
+BARE_ISSUE_NUMBER_RE = re.compile(r"^\d+$")
+
 from youtrack_cli.auth import AuthManager
 from youtrack_cli.custom_field_manager import CustomFieldManager
 from youtrack_cli.custom_field_types import CustomFieldValueTypes, IssueCustomFieldTypes
@@ -557,6 +560,23 @@ async def resolve_assignee_filter(
     return login, resolution
 
 
+async def resolve_optional_user_reference(
+    auth_manager: AuthManager,
+    user_ref: Optional[str],
+    *,
+    me_from: Optional[str],
+) -> Optional[str]:
+    if not user_ref:
+        return None
+    login, _ = await resolve_user_reference(
+        auth_manager,
+        user_ref,
+        allow_me=(user_ref == "me"),
+        me_from=me_from,
+    )
+    return login
+
+
 def issue_matches_state(issue: dict[str, Any], state_filter: Optional[str]) -> bool:
     if not state_filter:
         return True
@@ -691,6 +711,19 @@ def infer_project_ref_from_board(board: dict[str, Any]) -> Optional[str]:
     return first_non_empty(project.get("shortName"), project.get("id"), project.get("name"))
 
 
+async def infer_project_ref_from_selection_scope(
+    auth_manager: AuthManager,
+    selection_label: str,
+) -> Optional[str]:
+    if not selection_label:
+        return None
+    service = AgileService(auth_manager)
+    scoped_ids, scoped_boards = await load_scoped_boards(service, selection_label)
+    if len(scoped_ids) != 1 or len(scoped_boards) != 1:
+        return None
+    return infer_project_ref_from_board(scoped_boards[0])
+
+
 async def resolve_project_context(
     auth_manager: AuthManager,
     project_ref: str,
@@ -703,6 +736,40 @@ async def resolve_project_context(
     if not project.get("id"):
         fail(f"Could not resolve project: {project_ref}")
     return project
+
+
+async def normalize_issue_reference(
+    auth_manager: AuthManager,
+    selection_label: str,
+    issue_ref: str,
+    *,
+    project_ref: Optional[str] = None,
+    board_ref: Optional[str] = None,
+    board: Optional[dict[str, Any]] = None,
+) -> str:
+    normalized_ref = (issue_ref or "").strip()
+    if not normalized_ref or READABLE_ISSUE_ID_RE.match(normalized_ref):
+        return normalized_ref
+    if not BARE_ISSUE_NUMBER_RE.match(normalized_ref):
+        return normalized_ref
+
+    effective_project_ref = project_ref
+    if not effective_project_ref and board:
+        effective_project_ref = infer_project_ref_from_board(board)
+    if not effective_project_ref and board_ref:
+        service = AgileService(auth_manager)
+        resolved_board, _ = await resolve_target_board(service, selection_label, board_ref)
+        effective_project_ref = infer_project_ref_from_board(resolved_board)
+    if not effective_project_ref:
+        effective_project_ref = await infer_project_ref_from_selection_scope(auth_manager, selection_label)
+    if not effective_project_ref:
+        return normalized_ref
+
+    project = await resolve_project_context(auth_manager, effective_project_ref)
+    short_name = project.get("shortName")
+    if not short_name:
+        return normalized_ref
+    return f"{short_name}-{normalized_ref}"
 
 
 async def build_board_issues_payload(
@@ -965,15 +1032,17 @@ async def prepare_issue_create_operation(
     type_name: Optional[str],
     priority: Optional[str],
     assignee: Optional[str],
+    initiator: Optional[str],
     mine: bool,
     me_from: Optional[str],
     raw_fields: list[str],
+    resolve_board_context: bool = False,
 ) -> dict[str, Any]:
     board_service = AgileService(auth_manager)
     board = None
     sprint_name = None
     scoped_board_ids: list[str] = []
-    if board_ref or use_current_sprint:
+    if resolve_board_context or board_ref or use_current_sprint:
         board, scoped_board_ids = await resolve_target_board(board_service, selection_label, board_ref)
         if use_current_sprint:
             current_sprint = board.get("currentSprint") or {}
@@ -981,16 +1050,27 @@ async def prepare_issue_create_operation(
                 fail(f"Board {board.get('name') or board.get('id')} has no current sprint")
             sprint_name = current_sprint["name"]
 
+    normalized_parent_issue_id = None
+    if parent_issue_id:
+        normalized_parent_issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            parent_issue_id,
+            project_ref=project_ref,
+            board_ref=board_ref,
+            board=board,
+        )
+
     effective_project_ref = project_ref
     board_project_ref = None
     if not effective_project_ref and board:
         board_project_ref = infer_project_ref_from_board(board)
         if board_project_ref:
             effective_project_ref = board_project_ref
-    if not effective_project_ref and parent_issue_id:
+    if not effective_project_ref and normalized_parent_issue_id:
         effective_project_ref = await infer_project_ref_from_parent_issue(
             auth_manager,
-            parent_issue_id,
+            normalized_parent_issue_id,
         )
     if not effective_project_ref and board and not board_project_ref:
         fail(
@@ -1010,19 +1090,28 @@ async def prepare_issue_create_operation(
 
     resolved_assignee = None
     if mine:
-        resolved_assignee, _ = await resolve_user_reference(
+        resolved_assignee = await resolve_optional_user_reference(
             auth_manager,
             "me",
-            allow_me=True,
             me_from=me_from or "git-email-localpart",
         )
     elif assignee:
-        resolved_assignee, _ = await resolve_user_reference(auth_manager, assignee)
+        resolved_assignee = await resolve_optional_user_reference(
+            auth_manager,
+            assignee,
+            me_from=me_from or "git-email-localpart",
+        )
+    resolved_initiator = await resolve_optional_user_reference(
+        auth_manager,
+        initiator,
+        me_from=me_from or "git-email-localpart",
+    )
 
     field_assignments = parse_field_assignments(raw_fields)
     add_single_field_assignment(field_assignments, "Type", type_name, "--type")
     add_single_field_assignment(field_assignments, "Priority", priority, "--priority")
     add_single_field_assignment(field_assignments, "Assignee", resolved_assignee, "--assignee/--mine")
+    add_single_field_assignment(field_assignments, "Initiator", resolved_initiator, "--initiator")
 
     project_lookup_ref = first_non_empty(project.get("shortName"), project.get("id"))
     existing_issue_field_shapes: dict[str, dict[str, Any]] = {}
@@ -1034,7 +1123,7 @@ async def prepare_issue_create_operation(
             existing_issue_field_source,
         ) = await resolve_existing_issue_field_context(
             auth_manager,
-            parent_issue_id=parent_issue_id,
+            parent_issue_id=normalized_parent_issue_id,
             project_lookup_ref=project_lookup_ref,
         )
 
@@ -1054,6 +1143,13 @@ async def prepare_issue_create_operation(
     if custom_field_payloads:
         issue_payload["customFields"] = custom_field_payloads
 
+    validation_errors, warnings = build_issue_create_validation(
+        description=description,
+        field_assignments=field_assignments,
+        board=board,
+        sprint_name=sprint_name,
+    )
+
     preview = build_issue_mutation_preview(
         operation="create-subtask" if parent_issue_id else "create-issue",
         summary=summary,
@@ -1063,10 +1159,12 @@ async def prepare_issue_create_operation(
             "shortName": project.get("shortName"),
             "name": project.get("name"),
         },
-        parent_issue_id=parent_issue_id,
+        parent_issue_id=normalized_parent_issue_id,
         board=board,
         sprint_name=sprint_name,
         field_previews=field_previews,
+        validation_errors=validation_errors,
+        warnings=warnings,
         dry_run=True,
     )
     if scoped_board_ids:
@@ -1077,12 +1175,14 @@ async def prepare_issue_create_operation(
         "project": project,
         "board": board,
         "sprint_name": sprint_name,
-        "parent_issue_id": parent_issue_id,
+        "parent_issue_id": normalized_parent_issue_id,
         "issue_payload": issue_payload,
         "preview": preview,
         "field_infos": resolved_field_infos,
         "existing_issue_field_shapes": existing_issue_field_shapes,
         "existing_issue_field_source": existing_issue_field_source,
+        "validation_errors": validation_errors,
+        "warnings": warnings,
     }
 
 
@@ -1095,6 +1195,17 @@ async def apply_issue_create_operation(
     workflow_service = WorkflowIssueService(auth_manager)
     issue_service = IssueService(auth_manager)
     issue_manager = IssueManager(auth_manager)
+    validation_errors = prepared.get("validation_errors") or []
+    if validation_errors:
+        return {
+            "status": "error",
+            "dry_run": False,
+            "operation": "create-subtask" if prepared.get("parent_issue_id") else "create-issue",
+            "error_kind": "validation_failed",
+            "message": "Create request failed local validation",
+            "validation_errors": validation_errors,
+            "warnings": prepared.get("warnings") or [],
+        }
 
     try:
         create_result = await quiet_await(workflow_service.create_issue(prepared["issue_payload"]))
@@ -1109,12 +1220,14 @@ async def apply_issue_create_operation(
 
     created_issue = await build_issue_brief_payload(issue_service, created_id, base_url)
     applied_actions = [{"type": "create_issue", "issue_id": created_issue["id"]}]
+    board = prepared.get("board")
+    operation = "create-subtask" if prepared.get("parent_issue_id") else "create-issue"
 
     if prepared.get("parent_issue_id"):
         link_result = await quiet_await(
             issue_service.create_link(
-                created_issue["id"],
                 prepared["parent_issue_id"],
+                created_issue["id"],
                 "Subtask",
             )
         )
@@ -1122,26 +1235,31 @@ async def apply_issue_create_operation(
             return {
                 "status": "partial_success",
                 "dry_run": False,
-                "operation": "create-subtask",
+                "operation": operation,
                 "created_issue": created_issue,
+                "created_issue_id": created_issue.get("id"),
+                "created_issue_summary": created_issue.get("summary"),
+                "created_issue_url": created_issue.get("url"),
                 "applied_actions": applied_actions,
                 "failed_action": {
                     "type": "link_issue",
                     "link_type": "Subtask",
-                    "target_issue_id": prepared["parent_issue_id"],
+                    "parent_issue_id": prepared["parent_issue_id"],
+                    "child_issue_id": created_issue["id"],
                     "message": link_result["message"],
                 },
-                "warnings": [],
+                "target": build_create_target_payload(prepared),
+                "warnings": prepared.get("warnings") or [],
             }
         applied_actions.append(
             {
                 "type": "link_issue",
                 "link_type": "Subtask",
-                "target_issue_id": prepared["parent_issue_id"],
+                "parent_issue_id": prepared["parent_issue_id"],
+                "child_issue_id": created_issue["id"],
             }
         )
 
-    board = prepared.get("board")
     if board:
         query = build_board_command("add", board["name"], prepared.get("sprint_name"))
         board_add_result = await execute_issue_command(
@@ -1156,8 +1274,11 @@ async def apply_issue_create_operation(
             return {
                 "status": "partial_success",
                 "dry_run": False,
-                "operation": "create-subtask" if prepared.get("parent_issue_id") else "create-issue",
+                "operation": operation,
                 "created_issue": created_issue,
+                "created_issue_id": created_issue.get("id"),
+                "created_issue_summary": created_issue.get("summary"),
+                "created_issue_url": created_issue.get("url"),
                 "applied_actions": applied_actions,
                 "failed_action": {
                     "type": "board_add",
@@ -1166,7 +1287,8 @@ async def apply_issue_create_operation(
                     "sprint_name": prepared.get("sprint_name"),
                     "message": board_add_result["message"],
                 },
-                "warnings": [],
+                "target": build_create_target_payload(prepared),
+                "warnings": prepared.get("warnings") or [],
             }
         applied_actions.append(
             {
@@ -1180,10 +1302,14 @@ async def apply_issue_create_operation(
     return {
         "status": "success",
         "dry_run": False,
-        "operation": "create-subtask" if prepared.get("parent_issue_id") else "create-issue",
+        "operation": operation,
         "created_issue": created_issue,
+        "created_issue_id": created_issue.get("id"),
+        "created_issue_summary": created_issue.get("summary"),
+        "created_issue_url": created_issue.get("url"),
+        "target": build_create_target_payload(prepared),
         "applied_actions": applied_actions,
-        "warnings": [],
+        "warnings": prepared.get("warnings") or [],
     }
 
 
@@ -1405,9 +1531,11 @@ async def handle_board(
             type_name=args.type,
             priority=args.priority,
             assignee=args.assignee,
+            initiator=getattr(args, "initiator", None),
             mine=args.mine,
             me_from=args.me_from,
             raw_fields=args.field or [],
+            resolve_board_context=True,
         )
         if not args.apply:
             dump(prepared["preview"])
@@ -1796,11 +1924,20 @@ def build_issue_mutation_preview(
     board: Optional[dict[str, Any]] = None,
     sprint_name: Optional[str] = None,
     field_previews: list[dict[str, Any]],
+    validation_errors: Optional[list[dict[str, Any]]] = None,
+    warnings: Optional[list[dict[str, Any]]] = None,
     dry_run: bool,
 ) -> dict[str, Any]:
     planned_actions = [{"type": "create_issue"}]
     if parent_issue_id:
-        planned_actions.append({"type": "link_issue", "link_type": "Subtask", "target_issue_id": parent_issue_id})
+        planned_actions.append(
+            {
+                "type": "link_issue",
+                "link_type": "Subtask",
+                "parent_issue_id": parent_issue_id,
+                "child_issue_id": "<new-issue>",
+            }
+        )
     if board:
         planned_actions.append(
             {
@@ -1833,8 +1970,81 @@ def build_issue_mutation_preview(
             "fields": field_previews,
         },
         "planned_actions": planned_actions,
-        "warnings": [],
-        "validation_errors": [],
+        "warnings": warnings or [],
+        "validation_errors": validation_errors or [],
+    }
+
+
+def build_issue_create_validation(
+    *,
+    description: Optional[str],
+    field_assignments: dict[str, list[str]],
+    board: Optional[dict[str, Any]],
+    sprint_name: Optional[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    validation_errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+
+    if not (description or "").strip():
+        validation_errors.append(
+            {
+                "code": "description_required",
+                "field": "description",
+                "message": "Description is required for task creation flows.",
+            }
+        )
+    if not field_assignments.get("Assignee"):
+        validation_errors.append(
+            {
+                "code": "assignee_required",
+                "field": "Assignee",
+                "message": "Assignee is required for task creation flows.",
+            }
+        )
+    if not field_assignments.get("Initiator"):
+        validation_errors.append(
+            {
+                "code": "initiator_required",
+                "field": "Initiator",
+                "message": "Initiator is required for task creation flows.",
+            }
+        )
+    if not board:
+        warnings.append(
+            {
+                "code": "no_board_membership",
+                "message": "No board context requested. The created issue will not be added to a board or sprint by ytx.",
+            }
+        )
+    elif not sprint_name:
+        warnings.append(
+            {
+                "code": "no_current_sprint",
+                "message": "Board context is set, but no sprint was requested. The issue will be added without current sprint membership.",
+            }
+        )
+    return validation_errors, warnings
+
+
+def build_create_target_payload(prepared: dict[str, Any]) -> dict[str, Any]:
+    board = prepared.get("board")
+    project = prepared.get("project") or {}
+    return {
+        "project": {
+            "id": project.get("id"),
+            "shortName": project.get("shortName"),
+            "name": project.get("name"),
+        },
+        "parent_issue_id": prepared.get("parent_issue_id"),
+        "board": (
+            {
+                "id": board.get("id"),
+                "name": board.get("name"),
+            }
+            if board
+            else None
+        ),
+        "sprint_name": prepared.get("sprint_name"),
     }
 
 
@@ -1996,7 +2206,12 @@ async def handle_issue(
     issue_service = IssueService(auth_manager)
 
     if args.issue_command == "brief":
-        dump(await build_issue_brief_payload(issue_service, args.issue_id, base_url))
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+        )
+        dump(await build_issue_brief_payload(issue_service, issue_id, base_url))
         return
 
     if args.issue_command in {"create", "create-subtask"}:
@@ -2017,6 +2232,7 @@ async def handle_issue(
             type_name=args.type,
             priority=args.priority,
             assignee=args.assignee,
+            initiator=getattr(args, "initiator", None),
             mine=args.mine,
             me_from=args.me_from,
             raw_fields=args.field or [],
@@ -2028,11 +2244,21 @@ async def handle_issue(
         return
 
     if args.issue_command == "link":
+        source_issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.source_issue_id,
+        )
+        target_issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.target_issue_id,
+        )
         dump(
             await preview_or_apply_issue_link(
                 auth_manager,
-                source_issue_id=args.source_issue_id,
-                target_issue_id=args.target_issue_id,
+                source_issue_id=source_issue_id,
+                target_issue_id=target_issue_id,
                 link_type=args.link_type,
                 apply=args.apply,
             )
@@ -2040,10 +2266,15 @@ async def handle_issue(
         return
 
     if args.issue_command == "command":
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+        )
         await run_issue_command(
             auth_manager=auth_manager,
             manager=manager,
-            issue_id=args.issue_id,
+            issue_id=issue_id,
             query=args.query,
             dry_run=args.dry_run,
             comment=args.comment,
@@ -2069,10 +2300,16 @@ async def handle_issue(
             board_name=board_name,
             sprint_name=sprint_name,
         )
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+            board_ref=args.board,
+        )
         await run_issue_command(
             auth_manager=auth_manager,
             manager=manager,
-            issue_id=args.issue_id,
+            issue_id=issue_id,
             query=query,
             dry_run=args.dry_run,
             comment=args.comment,
@@ -2080,11 +2317,16 @@ async def handle_issue(
         return
 
     if args.issue_command == "show":
-        issue = await get_issue_data(manager, args.issue_id)
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+        )
+        issue = await get_issue_data(manager, issue_id)
         if args.raw:
             dump(issue)
         else:
-            dump(normalize_issue(issue, preferred_id=args.issue_id, base_url=base_url))
+            dump(normalize_issue(issue, preferred_id=issue_id, base_url=base_url))
         return
 
     if args.issue_command == "search":
@@ -2116,9 +2358,14 @@ async def handle_issue(
         if not has_change:
             fail("No issue changes specified")
 
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+        )
         result = await quiet_await(
             manager.update_issue(
-                issue_id=args.issue_id,
+                issue_id=issue_id,
                 summary=args.summary,
                 description=args.description,
                 state=args.state,
@@ -2132,24 +2379,44 @@ async def handle_issue(
         return
 
     if args.issue_command == "comment-add":
-        result = await quiet_await(manager.add_comment(args.issue_id, args.text))
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+        )
+        result = await quiet_await(manager.add_comment(issue_id, args.text))
         dump(result)
         return
 
     if args.issue_command == "comment-list":
-        result = await quiet_await(manager.list_comments(args.issue_id))
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+        )
+        result = await quiet_await(manager.list_comments(issue_id))
         if result["status"] != "success":
             fail(result["message"])
         dump([normalize_comment(comment) for comment in result["data"]])
         return
 
     if args.issue_command == "comment-update":
-        result = await quiet_await(manager.update_comment(args.issue_id, args.comment_id, args.text))
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+        )
+        result = await quiet_await(manager.update_comment(issue_id, args.comment_id, args.text))
         dump(result)
         return
 
     if args.issue_command == "comment-delete":
-        result = await quiet_await(manager.delete_comment(args.issue_id, args.comment_id))
+        issue_id = await normalize_issue_reference(
+            auth_manager,
+            selection_label,
+            args.issue_id,
+        )
+        result = await quiet_await(manager.delete_comment(issue_id, args.comment_id))
         dump(result)
         return
 
@@ -2275,6 +2542,7 @@ def build_parser() -> argparse.ArgumentParser:
     board_create_task.add_argument("--type")
     board_create_task.add_argument("--priority")
     board_create_task.add_argument("--assignee")
+    board_create_task.add_argument("--initiator")
     board_create_task.add_argument("--mine", action="store_true")
     board_create_task.add_argument("--me-from", choices=["git-email-localpart"], default="git-email-localpart")
     board_create_task.add_argument("--field", action="append")
@@ -2295,6 +2563,7 @@ def build_parser() -> argparse.ArgumentParser:
     board_create_subtask.add_argument("--type")
     board_create_subtask.add_argument("--priority")
     board_create_subtask.add_argument("--assignee")
+    board_create_subtask.add_argument("--initiator")
     board_create_subtask.add_argument("--mine", action="store_true")
     board_create_subtask.add_argument("--me-from", choices=["git-email-localpart"], default="git-email-localpart")
     board_create_subtask.add_argument("--field", action="append")
@@ -2323,6 +2592,7 @@ def build_parser() -> argparse.ArgumentParser:
     issue_create.add_argument("--type")
     issue_create.add_argument("--priority")
     issue_create.add_argument("--assignee")
+    issue_create.add_argument("--initiator")
     issue_create.add_argument("--mine", action="store_true")
     issue_create.add_argument("--me-from", choices=["git-email-localpart"], default="git-email-localpart")
     issue_create.add_argument("--field", action="append")
@@ -2343,6 +2613,7 @@ def build_parser() -> argparse.ArgumentParser:
     issue_create_subtask.add_argument("--type")
     issue_create_subtask.add_argument("--priority")
     issue_create_subtask.add_argument("--assignee")
+    issue_create_subtask.add_argument("--initiator")
     issue_create_subtask.add_argument("--mine", action="store_true")
     issue_create_subtask.add_argument("--me-from", choices=["git-email-localpart"], default="git-email-localpart")
     issue_create_subtask.add_argument("--field", action="append")

@@ -74,6 +74,8 @@ class InstallResult:
     install_root: Path
     claude_link: Path
     codex_link: Path
+    yt_shim: Optional[Path]
+    ytx_shim: Optional[Path]
     locale_mode: str
 
 
@@ -597,6 +599,19 @@ def ensure_skill_link(link_value: str, target_path: Path) -> None:
     os.symlink(link_value, target_path)
 
 
+def ensure_command_shim(link_value: str, target_path: Path) -> None:
+    if target_path.is_symlink():
+        current_target = os.readlink(target_path)
+        if current_target == link_value:
+            return
+        target_path.unlink()
+    elif target_path.exists():
+        raise SetupError(f"Refusing to replace existing shell command: {target_path}")
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(link_value, target_path)
+
+
 def run_bootstrap(skill_dir: Path) -> None:
     bootstrap_path = skill_dir / "scripts" / "bootstrap.sh"
     if not bootstrap_path.exists():
@@ -682,9 +697,15 @@ def perform_install(
     codex_link = install_root / ".codex" / "skills" / skill_name
     ensure_skill_link(claude_link_value, claude_link)
     ensure_skill_link(codex_link_value, codex_link)
+    yt_shim = None
+    ytx_shim = None
     if install_mode == "global":
         metadata = build_localized_metadata(runtime_dir, locale_mode, install_mode)
         register_global_skill_triggers(skill_name, metadata["triggers"])
+        yt_shim = install_root / ".local" / "bin" / "yt"
+        ytx_shim = install_root / ".local" / "bin" / "ytx"
+        ensure_command_shim(str(runtime_dir / "scripts" / "yt"), yt_shim)
+        ensure_command_shim(str(runtime_dir / "scripts" / "ytx"), ytx_shim)
     if install_mode == "local":
         ensure_local_testing_module(install_root)
         ensure_local_agents_entrypoint(install_root)
@@ -697,5 +718,7 @@ def perform_install(
         install_root=install_root,
         claude_link=claude_link,
         codex_link=codex_link,
+        yt_shim=yt_shim,
+        ytx_shim=ytx_shim,
         locale_mode=locale_mode,
     )
