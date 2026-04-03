@@ -89,6 +89,12 @@ use this order:
 
 Return the actual tasks. Do not ask the user to run these commands unless the skill is not installed or auth is missing.
 
+For direct read requests whose target is exactly the current developer's tasks on the current board or sprint, a successful `<ytx-command> board my-tasks` result with `issue_count` and `issues` is sufficient to answer immediately.
+
+Do not run follow-up board discovery commands such as `<ytx-command> board current`, `<ytx-command> board list --scoped`, or a repeated `<ytx-command> board my-tasks --board ...` after a successful `<ytx-command> board my-tasks` unless the original user request still requires information that is not present in that payload.
+
+For compound workflows, `<ytx-command> board my-tasks` may be an intermediate step, but continue only when the next step is required by the original user request.
+
 If the selected instance has exactly one scoped board and the user refers to "the board" loosely, treat that single scoped board as the target board.
 
 ## Scope Rules For Large Instances
