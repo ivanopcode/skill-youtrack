@@ -201,6 +201,31 @@ MULTI_VALUE_FIELD_TYPES = {
 }
 COMMAND_DRY_RUN_HINT = "Run without --apply for preview, then rerun with --apply to mutate."
 INTERNAL_ID_PATTERN = re.compile(r"^\d+-\d+$")
+HELP_TEXT_FORMATTER = argparse.RawDescriptionHelpFormatter
+BOARD_MY_TASKS_EPILOG = """Quick hints:
+- Use this for direct "show my current sprint tasks" reads.
+- If the selected instance has multiple scoped boards, pass --board explicitly.
+- The payload already includes board, sprint, issue_count, and issues.
+"""
+CREATE_TASK_EPILOG = """Workflow hints:
+- For long descriptions, use --description-file <path> or --description-stdin.
+- For self-owned work, use --assignee me --initiator me.
+- Pass --current-sprint when the issue should land on the current board sprint.
+- Use --apply only after preview looks correct.
+"""
+CREATE_SUBTASK_EPILOG = """Workflow hints:
+- For long descriptions, use --description-file <path> or --description-stdin.
+- For self-owned work, use --assignee me --initiator me.
+- Parent issue ids may be bare numbers when board/project context can resolve them.
+- Use --apply only after preview looks correct.
+"""
+ISSUE_CREATE_SUBTASK_EPILOG = """Workflow hints:
+- For long descriptions, use --description-file <path> or --description-stdin.
+- For self-owned work, use --assignee me --initiator me.
+- Parent issue ids may be bare numbers when board/project context can resolve them.
+- Need board/sprint placement as well? Use `board create-subtask --current-sprint`.
+- Use --apply only after preview looks correct.
+"""
 
 
 def dump(data: Any) -> None:
@@ -2522,6 +2547,8 @@ def build_parser() -> argparse.ArgumentParser:
     board_my_tasks = board_subparsers.add_parser(
         "my-tasks",
         help="List current sprint tasks assigned to the current developer",
+        epilog=BOARD_MY_TASKS_EPILOG,
+        formatter_class=HELP_TEXT_FORMATTER,
     )
     board_my_tasks.add_argument("--board", help="Board id or exact board name")
     board_my_tasks.add_argument("--source", choices=["web", "strict"], default="web")
@@ -2532,6 +2559,8 @@ def build_parser() -> argparse.ArgumentParser:
     board_create_task = board_subparsers.add_parser(
         "create-task",
         help="Create a task in a board/project context",
+        epilog=CREATE_TASK_EPILOG,
+        formatter_class=HELP_TEXT_FORMATTER,
     )
     board_create_task.add_argument("--board", help="Board id or exact board name")
     board_create_task.add_argument("--project")
@@ -2552,6 +2581,8 @@ def build_parser() -> argparse.ArgumentParser:
     board_create_subtask = board_subparsers.add_parser(
         "create-subtask",
         help="Create a subtask in a board/project context",
+        epilog=CREATE_SUBTASK_EPILOG,
+        formatter_class=HELP_TEXT_FORMATTER,
     )
     board_create_subtask.add_argument("--board", help="Board id or exact board name")
     board_create_subtask.add_argument("--project")
@@ -2583,6 +2614,8 @@ def build_parser() -> argparse.ArgumentParser:
     issue_create = issue_subparsers.add_parser(
         "create",
         help="Create an issue with preview-first semantics",
+        epilog=CREATE_TASK_EPILOG,
+        formatter_class=HELP_TEXT_FORMATTER,
     )
     issue_create.add_argument("--project")
     issue_create.add_argument("--summary", required=True)
@@ -2603,6 +2636,8 @@ def build_parser() -> argparse.ArgumentParser:
     issue_create_subtask = issue_subparsers.add_parser(
         "create-subtask",
         help="Create a subtask with preview-first semantics",
+        epilog=ISSUE_CREATE_SUBTASK_EPILOG,
+        formatter_class=HELP_TEXT_FORMATTER,
     )
     issue_create_subtask.add_argument("--parent-issue-id", "--parent", dest="parent_issue_id", required=True)
     issue_create_subtask.add_argument("--project")
