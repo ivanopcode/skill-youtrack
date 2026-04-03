@@ -52,6 +52,13 @@ CopyIgnore = shutil.ignore_patterns(
     "*.pyc",
     MANIFEST_FILENAME,
 )
+LOCAL_RUNTIME_PRUNE_PATHS = (
+    Path("README.md"),
+    CATALOG_RELATIVE_PATH,
+    Path("scripts") / "setup_main.py",
+    Path("scripts") / "setup_support.py",
+    Path("tests"),
+)
 
 
 class SetupError(RuntimeError):
@@ -76,6 +83,8 @@ class InstallResult:
     codex_link: Optional[Path]
     yt_shim: Optional[Path]
     ytx_shim: Optional[Path]
+    repo_bin_dir: Optional[Path]
+    repo_env_path: Optional[Path]
     locale_mode: str
 
 
@@ -588,6 +597,20 @@ def sync_skill_copy(source_dir: Path, dest_dir: Path) -> None:
     shutil.copytree(source_dir, dest_dir, ignore=CopyIgnore)
 
 
+def prune_local_runtime_copy(skill_dir: Path) -> None:
+    for relative_path in LOCAL_RUNTIME_PRUNE_PATHS:
+        target_path = skill_dir / relative_path
+        if target_path.is_symlink() or target_path.is_file():
+            target_path.unlink()
+            continue
+        if target_path.is_dir():
+            shutil.rmtree(target_path, ignore_errors=False)
+
+    locales_dir = skill_dir / "locales"
+    if locales_dir.is_dir() and not any(locales_dir.iterdir()):
+        locales_dir.rmdir()
+
+
 def ensure_skill_link(link_value: str, target_path: Path) -> None:
     if target_path.is_symlink() or target_path.is_file():
         target_path.unlink()
@@ -609,6 +632,32 @@ def ensure_command_shim(link_value: str, target_path: Path) -> None:
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(link_value, target_path)
+
+
+def write_repo_env_file(repo_root: Path) -> Path:
+    env_path = repo_root / ".agents" / "env.sh"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n\n"
+        'if ! REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then\n'
+        '  echo "source .agents/env.sh from inside the repository" >&2\n'
+        "  return 1 2>/dev/null || exit 1\n"
+        "fi\n\n"
+        'export PATH="$REPO_ROOT/.agents/bin:$REPO_ROOT/.agents/skills/skill-youtrack/.venv/bin:${PATH}"\n'
+        "unset REPO_ROOT\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o755)
+    return env_path
+
+
+def ensure_repo_command_layer(repo_root: Path, skill_name: str) -> tuple[Path, Path]:
+    repo_bin_dir = repo_root / ".agents" / "bin"
+    ensure_command_shim(f"../skills/{skill_name}/scripts/yt", repo_bin_dir / "yt")
+    ensure_command_shim(f"../skills/{skill_name}/scripts/ytx", repo_bin_dir / "ytx")
+    env_path = write_repo_env_file(repo_root)
+    return repo_bin_dir, env_path
 
 
 def run_bootstrap(skill_dir: Path) -> None:
@@ -682,6 +731,8 @@ def perform_install(
 
     sync_skill_copy(source_dir, runtime_dir)
     render_skill_metadata(runtime_dir, locale_mode, install_mode)
+    if install_mode == "local":
+        prune_local_runtime_copy(runtime_dir)
     write_install_manifest(
         skill_dir=runtime_dir,
         skill_name=skill_name,
@@ -701,6 +752,8 @@ def perform_install(
         ensure_skill_link(codex_link_value, codex_link)
     yt_shim = None
     ytx_shim = None
+    repo_bin_dir = None
+    repo_env_path = None
     if install_mode == "global":
         metadata = build_localized_metadata(runtime_dir, locale_mode, install_mode)
         register_global_skill_triggers(skill_name, metadata["triggers"])
@@ -708,6 +761,8 @@ def perform_install(
         ytx_shim = install_root / ".local" / "bin" / "ytx"
         ensure_command_shim(str(runtime_dir / "scripts" / "yt"), yt_shim)
         ensure_command_shim(str(runtime_dir / "scripts" / "ytx"), ytx_shim)
+    elif install_mode == "local":
+        repo_bin_dir, repo_env_path = ensure_repo_command_layer(install_root, skill_name)
     return InstallResult(
         skill_name=skill_name,
         install_mode=install_mode,
@@ -718,5 +773,7 @@ def perform_install(
         codex_link=codex_link,
         yt_shim=yt_shim,
         ytx_shim=ytx_shim,
+        repo_bin_dir=repo_bin_dir,
+        repo_env_path=repo_env_path,
         locale_mode=locale_mode,
     )

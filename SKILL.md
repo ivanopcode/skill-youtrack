@@ -30,9 +30,9 @@ triggers:
 - If the skill file path is `/abs/path/to/SKILL.md`, then:
   - `<yt-command>` is `/abs/path/to/scripts/yt`
   - `<ytx-command>` is `/abs/path/to/scripts/ytx`
-- Use those absolute command paths for every command in this skill.
+- Prefer those absolute command paths unless the repository bootstrap already provisioned `.agents/bin/yt` and `.agents/bin/ytx` and that repo-local bin layer is on `PATH`.
+- Bare `yt` and `ytx` are acceptable only when they resolve through that repo-local `.agents/bin` layer.
 - Do not run `scripts/yt` or `scripts/ytx` as paths relative to the current working directory.
-- Do not use a bare `yt` from `PATH`.
 
 ## Resolve Context First
 
@@ -175,13 +175,16 @@ Rules:
 - For file-backed task creation, use `--description-file <path>` instead of pasting multiline text into `--description`.
 - Do not create a task or subtask with an empty description. Treat missing description as a blocking error for the workflow.
 - For board- or sprint-centric task entry, prefer `board create-task` or `board create-subtask` over `issue create` and `issue create-subtask`.
+- If the workflow is board-centric and the selected instance already implies a single scoped board, treat board placement as part of a complete result, not as an optional follow-up.
 - If the request is about the current sprint, use `--current-sprint` so the issue is added to the current sprint during the create flow.
 - For `issue create-subtask` and `board create-subtask`, prefer explicit `--board` or `--project` when the surrounding workflow already identifies the target board or project.
 - `ytx issue create-subtask` can infer the project from `--parent`, but treat that as a fallback, not as a reason to guess board or project context.
 - Do not pass long or multiline Markdown descriptions inline through `--description`.
 - Use `--description-file <path>` or `--description-stdin` for long descriptions, rich Markdown, or text that may contain shell-sensitive quoting.
 - Reserve inline `--description` for short shell-safe text.
+- For created issues and subtasks, present human-readable issue ids such as `PMA-22300`. Do not present internal ids such as `92-5010881` unless the user explicitly asks for raw internal ids.
 - For `issue create`, `issue create-subtask`, `board create-task`, and `board create-subtask`, a successful preview does not prove that the server will accept the payload.
+- Treat `no_board_membership` as an incomplete create result for board- or sprint-centric repository workflows unless the user explicitly asked to keep the issue off all boards.
 - If `--apply` returns structured `field_type_mismatch` or `field_required`, stop guessing alternate CLI syntax immediately.
 - Do not retry the same create intent by switching between `--field`, `--custom-field`, enum ids, direct flag forms, or JSON-like strings such as `Field=["Alpha"]`.
 - If create fails with `field_type_mismatch`, inspect the structured error payload and reuse the exact field/type guidance from `ytx`.
@@ -189,6 +192,9 @@ Rules:
 - Multi-value fields must be serialized as repeated `--field 'Name=Value'` arguments. Do not serialize multi-value fields as JSON text inside a single CLI value.
 - The guided retry may auto-copy only parent-derived classification fields. Do not auto-copy `Type`, `Priority`, `Assignee`, `State`, or `Initiator`.
 - If the guided retry still fails, report the `ytx` defect path and stop instead of continuing trial-and-error retries.
+- If create succeeds with a `no_board_membership` warning in a board- or sprint-centric workflow, immediately finish the workflow by either:
+  - re-running the create through `board create-task` or `board create-subtask`, or
+  - applying `issue board-add --current-sprint` when the intended board is already known.
 - For task creation and subtask creation, `Assignee` and `Initiator` are mandatory planning inputs even if YouTrack itself can accept a more partial payload.
 - Fast path: if the user intent clearly means the task belongs to the current developer, set both `--assignee me` and `--initiator me` without asking.
 - For any assignee or initiator other than `me`, do not guess from display names alone.
@@ -266,18 +272,16 @@ Do this once per response. Do not loop on repeated self-checks after you already
 
 Use this only when installation or authentication is missing.
 
-Install globally:
+Install into one repository from the source skill repo:
 
 ```bash
-setup.sh global --locale <locale>
+setup.sh /abs/path/to/repo --locale <locale>
 ```
 
-Global install also exposes shell shims at `~/.local/bin/yt` and `~/.local/bin/ytx` when those paths are free.
-
-Install into one repository:
+Bootstrap the committed repo-local runtime after clone or when a project bootstrap script refreshes the tracked runtime:
 
 ```bash
-setup.sh local /abs/path/to/repo --locale <locale>
+<repo>/.agents/skills/skill-youtrack/setup.sh
 ```
 
 Log in with an explicit label and optional scoped boards:

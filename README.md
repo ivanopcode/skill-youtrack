@@ -76,9 +76,9 @@ the primary locale only.
 - `agents/openai.yaml`
   Skill card metadata rendered during installation
 - `setup.sh`
-  Supported installation entrypoint for global or per-repository installs
+  Dual-mode entrypoint for source installs into one repository and repo-local bootstrap after clone
 - `scripts/setup_main.py`, `scripts/setup_support.py`
-  Standalone install helper for managed copies, metadata rendering, and agent wiring
+  Source-install helper for repo-local copies, metadata rendering, and runtime packaging
 - `scripts/bootstrap.sh`
   Creates `.venv/` and installs Python dependencies
 - `scripts/yt`
@@ -105,7 +105,8 @@ agent should prefer. This is the agent-facing contract.
 
 ### 2. Setup And Bootstrap Layer
 
-`setup.sh` installs the skill into agent environments.
+`setup.sh` installs the skill into one repository when run from the source repo
+and bootstraps a committed repo-local runtime when run from an installed copy.
 `scripts/bootstrap.sh` prepares the local Python runtime and installs dependencies.
 
 This keeps the skill self-contained at runtime without depending on `pipx` or a
@@ -138,23 +139,50 @@ used through the scoped board surface rather than unrestricted board discovery.
 
 ## Installation
 
-### Global Install
+### Install Into One Repository
 
-Use this when the skill should be available from your home-level agent setup:
+Use this when a project should carry its own tracked copy of the skill:
 
 ```bash
-~/agents/skills/skill-youtrack/setup.sh global --locale en
+~/agents/skills/skill-youtrack/setup.sh /abs/path/to/repo --locale ru
 ```
 
 This does the following:
 
-- copies the source skill into a managed runtime directory outside the source repo
-- bootstraps the managed copy `.venv/`
-- installs the Python dependencies
-- renders installed metadata in the requested locale
-- links the skill into `~/.claude/skills/skill-youtrack`
-- links the skill into `~/.codex/skills/skill-youtrack`
-- registers the skill triggers in `~/.agents/.instructions/INSTRUCTIONS_SKILL_TRIGGERS.md`
+- copies the skill into `<repo>/.agents/skills/skill-youtrack`
+- removes nested git metadata from that copied skill
+- renders installed metadata in the selected locale
+- prunes installer-only files from the committed runtime copy
+- bootstraps the copied skill runtime
+- links `<repo>/.claude/skills/skill-youtrack` to that copied skill
+- prefixes the local skill metadata with a locale-aware local marker so it is distinguishable in skill UIs
+
+The copied skill is intended to be tracked by the project repository.
+Its locale is project-fixed on first install. Later reruns reuse the stored
+locale. Passing a different locale for that project copy fails instead of
+silently rewriting the install metadata.
+
+### Bootstrap After Clone
+
+Once the committed runtime copy already exists inside the repository:
+
+```bash
+<repo>/.agents/skills/skill-youtrack/setup.sh
+```
+
+This refreshes the project-local `.claude` link and installs runtime
+dependencies into `<repo>/.agents/skills/skill-youtrack/.venv`.
+It also refreshes:
+
+- `<repo>/.agents/bin/yt`
+- `<repo>/.agents/bin/ytx`
+- `<repo>/.agents/env.sh`
+
+Project bootstrap scripts can then expose the repo-local commands with:
+
+```bash
+source <repo>/.agents/env.sh
+```
 
 The source of truth remains the source directory:
 
@@ -162,44 +190,21 @@ The source of truth remains the source directory:
 ~/agents/skills/skill-youtrack
 ```
 
-The managed global install lives under:
+The committed runtime copy lives under:
 
 ```text
-${XDG_DATA_HOME:-~/.local/share}/agents/skills/skill-youtrack
+<repo>/.agents/skills/skill-youtrack
 ```
-
-### Local Install
-
-Use this when a project should carry its own tracked copy of the skill:
-
-```bash
-~/agents/skills/skill-youtrack/setup.sh local /abs/path/to/repo --locale ru
-```
-
-This does the following:
-
-- copies the skill into `<repo>/.agents/skills/skill-youtrack`
-- removes nested git metadata from that copied skill
-- bootstraps the copied skill runtime
-- renders installed metadata in the selected locale
-- links `<repo>/.claude/skills/skill-youtrack` to that copied skill
-- prefixes the local skill metadata with a locale-aware local marker so it is distinguishable in skill UIs
-
-The copied skill is intended to be tracked by the project repository.
-Its locale is project-fixed on first install. Later reruns reuse the stored
-locale. Passing a different locale for that project copy fails instead of
-silently rewriting tracked metadata.
 
 The source `skill-youtrack` repository itself does not need to contain a root
-`AGENTS.md`. In `local` mode the installer only refreshes the copied skill under
+`AGENTS.md`. Repo install mode only refreshes the copied skill under
 the target repository and does not modify other project files.
 
 ### Locale Selection Rules
 
 - First install requires explicit `--locale`
 - Later reruns may omit `--locale` and reuse the stored install manifest value
-- Global install may be rerun later with a different locale to re-render the managed copy
-- Local install may not change locale after the first project install
+- Repo install may not change locale after the first project install
 
 ## First Login
 
@@ -432,36 +437,25 @@ In a project-local install, the equivalent paths are:
 If the source skill lives in a versioned directory, update it there first.
 Then reinstall or refresh the target environment.
 
-### Refresh A Global Install
-
-After updating the source skill:
-
-```bash
-~/agents/skills/skill-youtrack/setup.sh global --locale en
-```
-
-If the install already has a manifest, you may omit `--locale` to reuse it.
-This refreshes the managed runtime copy and reaffirms the symlinks.
-
 ### Refresh A Local Project Copy
 
 After updating the source skill:
 
 ```bash
-~/agents/skills/skill-youtrack/setup.sh local /abs/path/to/repo --locale ru
+~/agents/skills/skill-youtrack/setup.sh /abs/path/to/repo --locale ru
 ```
 
 This recopies the source skill into `<repo>/.agents/skills/skill-youtrack`, strips nested
-git metadata again, and refreshes the local runtime.
+git metadata again, prunes installer-only files again, and refreshes the local runtime.
 If that project has already been installed once, you may omit `--locale` and the
 stored project locale will be reused.
 
 ### Rebuild The Runtime In Place
 
-If you only need to refresh the Python environment of an installed copy:
+If the repo already carries the committed runtime copy:
 
 ```bash
-<skill-dir>/scripts/bootstrap.sh --force
+<repo>/.agents/skills/skill-youtrack/setup.sh
 ```
 
 ### Upgrade The Upstream Dependency Version

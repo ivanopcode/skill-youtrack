@@ -758,7 +758,44 @@ class YtxTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "partial_success")
         self.assertEqual(result["created_issue"]["id"], "PROJ-22199")
+        self.assertEqual(result["created_issue_id"], "PROJ-22199")
+        self.assertEqual(result["created_issue_id_readable"], "PROJ-22199")
+        self.assertEqual(result["created_issue_id_internal"], "92-1")
         issue_service.create_link.assert_awaited_once_with("PROJ-21079", "PROJ-22199", "Subtask")
+
+    def test_build_issue_brief_payload_prefers_id_readable_over_internal_id(self) -> None:
+        issue_service = mock.Mock()
+        issue_service.get_issue = AsyncMock(
+            return_value={
+                "status": "success",
+                "data": {
+                    "id": "92-1",
+                    "idReadable": "PROJ-22199",
+                    "summary": "Worktree setup",
+                    "description": "desc",
+                    "created": 1,
+                    "updated": 2,
+                    "resolved": None,
+                    "project": {"name": "Example Project"},
+                    "customFields": [
+                        {"name": "State", "value": {"name": "Open"}},
+                        {"name": "Type", "value": {"name": "Task"}},
+                    ],
+                    "links": [],
+                },
+            }
+        )
+
+        payload = asyncio.run(
+            ytx.build_issue_brief_payload(
+                issue_service,
+                "92-1",
+                "https://youtrack.example.com",
+            )
+        )
+
+        self.assertEqual(payload["id"], "PROJ-22199")
+        self.assertEqual(payload["url"], "https://youtrack.example.com/issue/PROJ-22199")
 
     def test_apply_issue_create_operation_returns_validation_failed_without_mutation(self) -> None:
         prepared = {

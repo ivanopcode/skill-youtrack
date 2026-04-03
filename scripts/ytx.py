@@ -973,7 +973,7 @@ async def build_issue_brief_payload(
     if result["status"] != "success":
         fail(result["message"])
     issue = result["data"] or {}
-    payload = normalize_issue(issue, preferred_id=issue_id, base_url=base_url)
+    payload = normalize_issue(issue, base_url=base_url)
     payload["links"] = [normalize_issue_link(link, base_url=base_url) for link in issue.get("links", [])]
     return payload
 
@@ -1263,6 +1263,8 @@ async def apply_issue_create_operation(
                 "operation": operation,
                 "created_issue": created_issue,
                 "created_issue_id": created_issue.get("id"),
+                "created_issue_id_readable": created_issue.get("id"),
+                "created_issue_id_internal": created.get("id"),
                 "created_issue_summary": created_issue.get("summary"),
                 "created_issue_url": created_issue.get("url"),
                 "applied_actions": applied_actions,
@@ -1302,6 +1304,8 @@ async def apply_issue_create_operation(
                 "operation": operation,
                 "created_issue": created_issue,
                 "created_issue_id": created_issue.get("id"),
+                "created_issue_id_readable": created_issue.get("id"),
+                "created_issue_id_internal": created.get("id"),
                 "created_issue_summary": created_issue.get("summary"),
                 "created_issue_url": created_issue.get("url"),
                 "applied_actions": applied_actions,
@@ -1330,6 +1334,8 @@ async def apply_issue_create_operation(
         "operation": operation,
         "created_issue": created_issue,
         "created_issue_id": created_issue.get("id"),
+        "created_issue_id_readable": created_issue.get("id"),
+        "created_issue_id_internal": created.get("id"),
         "created_issue_summary": created_issue.get("summary"),
         "created_issue_url": created_issue.get("url"),
         "target": build_create_target_payload(prepared),
@@ -2038,7 +2044,7 @@ def build_issue_create_validation(
         warnings.append(
             {
                 "code": "no_board_membership",
-                "message": "No board context requested. The created issue will not be added to a board or sprint by ytx.",
+                "message": "No board context requested. The created issue will not be added to a board or sprint by ytx. Use board create-* or follow with issue board-add.",
             }
         )
     elif not sprint_name:
