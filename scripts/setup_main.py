@@ -7,7 +7,6 @@ from pathlib import Path
 
 from setup_support import (
     SUPPORTED_LOCALE_MODES,
-    InstallResult,
     SetupError,
     perform_install,
 )
@@ -15,8 +14,8 @@ from setup_support import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="setup.sh",
-        description="Install skill-youtrack into one repository-local agent runtime.",
+        prog="make install",
+        description="Copy skill-youtrack into one repository-local agent runtime.",
     )
     locale_help = (
         "Locale mode for installed metadata. "
@@ -26,22 +25,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("repo_path", help="Path to the git repository root or any path inside that repository")
     parser.add_argument("--locale", help=locale_help)
     return parser
-
-
-def print_result(result: InstallResult) -> None:
-    print(f"Installed {result.skill_name}")
-    print(f"  Source: {result.source_dir}")
-    print(f"  Locale: {result.locale_mode}")
-    print(f"  Project copy: {result.runtime_dir}")
-    if result.claude_link:
-        print(f"  Claude skill link: {result.claude_link}")
-    if result.repo_bin_dir:
-        print(f"  Repo bin: {result.repo_bin_dir}")
-    if result.repo_env_path:
-        print(f"  Shell env: source {result.repo_env_path}")
-    print()
-    print("Next step:")
-    print(f"  {result.runtime_dir}/setup.sh")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -60,7 +43,13 @@ def main(argv: list[str] | None = None) -> None:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
 
-    print_result(result)
+    print(f"Installed {result.skill_name}")
+    print(f"  Source: {result.source_dir}")
+    print(f"  Locale: {result.locale_mode}")
+    print(f"  Project copy: {result.runtime_dir}")
+    print()
+    print("Next step:")
+    print(f"  make -C {result.runtime_dir} skill")
 
 
 if __name__ == "__main__":

@@ -75,8 +75,8 @@ the primary locale only.
   Install-time translation catalog for user-facing metadata and trigger catalog
 - `agents/openai.yaml`
   Skill card metadata rendered during installation
-- `setup.sh`
-  Dual-mode entrypoint for source installs into one repository and repo-local bootstrap after clone
+- `Makefile`
+  Public entrypoints for `make install` in the source repo and `make skill` in a committed runtime copy
 - `scripts/setup_main.py`, `scripts/setup_support.py`
   Source-install helper for repo-local copies, metadata rendering, and runtime packaging
 - `scripts/bootstrap.sh`
@@ -105,8 +105,8 @@ agent should prefer. This is the agent-facing contract.
 
 ### 2. Setup And Bootstrap Layer
 
-`setup.sh` installs the skill into one repository when run from the source repo
-and bootstraps a committed repo-local runtime when run from an installed copy.
+`make install` copies a committed runtime into one repository from the source
+skill repo. `make skill` bootstraps a committed runtime copy in place.
 `scripts/bootstrap.sh` prepares the local Python runtime and installs dependencies.
 
 This keeps the skill self-contained at runtime without depending on `pipx` or a
@@ -144,7 +144,7 @@ used through the scoped board surface rather than unrestricted board discovery.
 Use this when a project should carry its own tracked copy of the skill:
 
 ```bash
-~/agents/skills/skill-youtrack/setup.sh /abs/path/to/repo --locale ru
+make install REPO=/abs/path/to/repo LOCALE=ru
 ```
 
 This does the following:
@@ -153,8 +153,6 @@ This does the following:
 - removes nested git metadata from that copied skill
 - renders installed metadata in the selected locale
 - prunes installer-only files from the committed runtime copy
-- bootstraps the copied skill runtime
-- links `<repo>/.claude/skills/skill-youtrack` to that copied skill
 - prefixes the local skill metadata with a locale-aware local marker so it is distinguishable in skill UIs
 
 The copied skill is intended to be tracked by the project repository.
@@ -167,22 +165,13 @@ silently rewriting the install metadata.
 Once the committed runtime copy already exists inside the repository:
 
 ```bash
-<repo>/.agents/skills/skill-youtrack/setup.sh
+make -C <repo>/.agents/skills/skill-youtrack skill
 ```
 
-This refreshes the project-local `.claude` link and installs runtime
+This bootstraps only the committed skill runtime itself and installs runtime
 dependencies into `<repo>/.agents/skills/skill-youtrack/.venv`.
-It also refreshes:
-
-- `<repo>/.agents/bin/yt`
-- `<repo>/.agents/bin/ytx`
-- `<repo>/.agents/env.sh`
-
-Project bootstrap scripts can then expose the repo-local commands with:
-
-```bash
-source <repo>/.agents/env.sh
-```
+Repository-level wiring such as `.claude/skills/*`, `.agents/bin/*`, and any
+shared `PATH` setup belongs to the project bootstrap layer, not to this skill.
 
 The source of truth remains the source directory:
 
@@ -416,14 +405,8 @@ Examples:
 - `Use $skill-youtrack to add a comment to <issue-id> and then show the updated issue.`
 - `Use $skill-youtrack to switch to instance <label> and inspect board <board-id>.`
 
-When an agent needs explicit shell commands, the preferred pattern is:
-
-```bash
-~/.codex/skills/skill-youtrack/scripts/ytx board my-tasks
-~/.codex/skills/skill-youtrack/scripts/ytx issue brief <issue-id>
-```
-
-In a project-local install, the equivalent paths are:
+When an agent needs explicit shell commands inside a repository checkout, the
+preferred pattern is:
 
 ```bash
 <repo>/.agents/skills/skill-youtrack/scripts/ytx board my-tasks
@@ -442,11 +425,11 @@ Then reinstall or refresh the target environment.
 After updating the source skill:
 
 ```bash
-~/agents/skills/skill-youtrack/setup.sh /abs/path/to/repo --locale ru
+make install REPO=/abs/path/to/repo LOCALE=ru
 ```
 
-This recopies the source skill into `<repo>/.agents/skills/skill-youtrack`, strips nested
-git metadata again, prunes installer-only files again, and refreshes the local runtime.
+This recopies the source skill into `<repo>/.agents/skills/skill-youtrack`,
+strips nested git metadata again, and prunes installer-only files again.
 If that project has already been installed once, you may omit `--locale` and the
 stored project locale will be reused.
 
@@ -455,7 +438,7 @@ stored project locale will be reused.
 If the repo already carries the committed runtime copy:
 
 ```bash
-<repo>/.agents/skills/skill-youtrack/setup.sh
+make -C <repo>/.agents/skills/skill-youtrack skill
 ```
 
 ### Upgrade The Upstream Dependency Version

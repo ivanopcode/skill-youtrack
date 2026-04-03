@@ -30,8 +30,9 @@ triggers:
 - If the skill file path is `/abs/path/to/SKILL.md`, then:
   - `<yt-command>` is `/abs/path/to/scripts/yt`
   - `<ytx-command>` is `/abs/path/to/scripts/ytx`
-- Prefer those absolute command paths unless the repository bootstrap already provisioned `.agents/bin/yt` and `.agents/bin/ytx` and that repo-local bin layer is on `PATH`.
+- Prefer those absolute command paths unless the repository bootstrap already provisioned `.agents/bin/yt` and `.agents/bin/ytx` through repo-level `make agents` and that repo-local bin layer is on `PATH`.
 - Bare `yt` and `ytx` are acceptable only when they resolve through that repo-local `.agents/bin` layer.
+- This skill does not provision `PATH` itself. Repo-level command shims belong to the project bootstrap layer.
 - Do not run `scripts/yt` or `scripts/ytx` as paths relative to the current working directory.
 
 ## Resolve Context First
@@ -275,13 +276,13 @@ Use this only when installation or authentication is missing.
 Install into one repository from the source skill repo:
 
 ```bash
-setup.sh /abs/path/to/repo --locale <locale>
+make install REPO=/abs/path/to/repo LOCALE=<locale>
 ```
 
 Bootstrap the committed repo-local runtime after clone or when a project bootstrap script refreshes the tracked runtime:
 
 ```bash
-<repo>/.agents/skills/skill-youtrack/setup.sh
+make -C <repo>/.agents/skills/skill-youtrack skill
 ```
 
 Log in with an explicit label and optional scoped boards:

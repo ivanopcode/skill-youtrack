@@ -1,0 +1,6 @@
+{
+  "commands": {
+    "yt": "scripts/yt",
+    "ytx": "scripts/ytx"
+  }
+}
