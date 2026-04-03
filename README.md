@@ -172,14 +172,11 @@ Use this when a project should carry its own tracked copy of the skill:
 
 This does the following:
 
-- copies the skill into `<repo>/.skills/skill-youtrack`
+- copies the skill into `<repo>/.agents/skills/skill-youtrack`
 - removes nested git metadata from that copied skill
 - bootstraps the copied skill runtime
 - renders installed metadata in the selected locale
-- links `<repo>/.claude/skills/skill-youtrack` to the local copy
-- links `<repo>/.codex/skills/skill-youtrack` to the local copy
-- provisions `<repo>/.agents/.instructions/INSTRUCTIONS_TESTING.md`
-- ensures `<repo>/AGENTS.md` references `@.agents/.instructions/INSTRUCTIONS_TESTING.md` from the `Modules` section
+- links `<repo>/.claude/skills/skill-youtrack` to that copied skill
 - prefixes the local skill metadata with a locale-aware local marker so it is distinguishable in skill UIs
 
 The copied skill is intended to be tracked by the project repository.
@@ -188,8 +185,8 @@ locale. Passing a different locale for that project copy fails instead of
 silently rewriting tracked metadata.
 
 The source `skill-youtrack` repository itself does not need to contain a root
-`AGENTS.md`. The `AGENTS.md` and `.agents/.instructions` changes above apply to
-the target repository being wired in `local` mode, not to this source checkout.
+`AGENTS.md`. In `local` mode the installer only refreshes the copied skill under
+the target repository and does not modify other project files.
 
 ### Locale Selection Rules
 
@@ -418,8 +415,8 @@ When an agent needs explicit shell commands, the preferred pattern is:
 In a project-local install, the equivalent paths are:
 
 ```bash
-<repo>/.codex/skills/skill-youtrack/scripts/ytx board my-tasks
-<repo>/.codex/skills/skill-youtrack/scripts/ytx issue brief <issue-id>
+<repo>/.agents/skills/skill-youtrack/scripts/ytx board my-tasks
+<repo>/.agents/skills/skill-youtrack/scripts/ytx issue brief <issue-id>
 ```
 
 ## Update And Maintenance
@@ -448,8 +445,8 @@ After updating the source skill:
 ~/agents/skills/skill-youtrack/setup.sh local /abs/path/to/repo --locale ru
 ```
 
-This recopies the source skill into `<repo>/.skills/skill-youtrack`, strips nested
-git metadata again, refreshes the local runtime, and keeps the project-local links aligned.
+This recopies the source skill into `<repo>/.agents/skills/skill-youtrack`, strips nested
+git metadata again, and refreshes the local runtime.
 If that project has already been installed once, you may omit `--locale` and the
 stored project locale will be reused.
 

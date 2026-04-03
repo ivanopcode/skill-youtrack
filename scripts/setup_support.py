@@ -72,8 +72,8 @@ class InstallResult:
     source_dir: Path
     runtime_dir: Path
     install_root: Path
-    claude_link: Path
-    codex_link: Path
+    claude_link: Optional[Path]
+    codex_link: Optional[Path]
     yt_shim: Optional[Path]
     ytx_shim: Optional[Path]
     locale_mode: str
@@ -673,9 +673,9 @@ def perform_install(
         if repo_root is None:
             raise SetupError("Local install requires a repository path.")
         install_root = resolve_repo_root(repo_root)
-        runtime_dir = install_root / ".skills" / skill_name
-        claude_link_value = f"../../.skills/{skill_name}"
-        codex_link_value = f"../../.skills/{skill_name}"
+        runtime_dir = install_root / ".agents" / "skills" / skill_name
+        claude_link_value = f"../../.agents/skills/{skill_name}"
+        codex_link_value = None
     else:
         raise SetupError(f"Unsupported install mode: {install_mode}")
 
@@ -693,10 +693,13 @@ def perform_install(
     )
     bootstrap_runner(runtime_dir)
 
-    claude_link = install_root / ".claude" / "skills" / skill_name
-    codex_link = install_root / ".codex" / "skills" / skill_name
-    ensure_skill_link(claude_link_value, claude_link)
-    ensure_skill_link(codex_link_value, codex_link)
+    claude_link: Optional[Path] = None
+    codex_link: Optional[Path] = None
+    if claude_link_value is not None and codex_link_value is not None:
+        claude_link = install_root / ".claude" / "skills" / skill_name
+        codex_link = install_root / ".codex" / "skills" / skill_name
+        ensure_skill_link(claude_link_value, claude_link)
+        ensure_skill_link(codex_link_value, codex_link)
     yt_shim = None
     ytx_shim = None
     if install_mode == "global":
@@ -706,10 +709,6 @@ def perform_install(
         ytx_shim = install_root / ".local" / "bin" / "ytx"
         ensure_command_shim(str(runtime_dir / "scripts" / "yt"), yt_shim)
         ensure_command_shim(str(runtime_dir / "scripts" / "ytx"), ytx_shim)
-    if install_mode == "local":
-        ensure_local_testing_module(install_root)
-        ensure_local_agents_entrypoint(install_root)
-
     return InstallResult(
         skill_name=skill_name,
         install_mode=install_mode,
