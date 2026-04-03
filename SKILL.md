@@ -123,6 +123,7 @@ Rules:
 - Use `<ytx-command> board tasks --initiator ...` when the user asks who initiated the tasks.
 - `assignee` and `initiator` are different filters. Do not treat them as interchangeable.
 - Use `<ytx-command> board issues ...` and `<ytx-command> board scoped-issues ...` as lower-level inspection tools, not as the default final read path.
+- Agent-facing board and task list reads must prefer compact issue payloads. Do not include full issue descriptions or full custom field maps in task-list answers unless the user explicitly asks for issue details.
 
 ## Issue Reads
 
@@ -172,6 +173,15 @@ Rules:
 - Multi-value fields must be serialized as repeated `--field 'Name=Value'` arguments. Do not serialize multi-value fields as JSON text inside a single CLI value.
 - The guided retry may auto-copy only parent-derived classification fields. Do not auto-copy `Type`, `Priority`, `Assignee`, `State`, or `Initiator`.
 - If the guided retry still fails, report the `ytx` defect path and stop instead of continuing trial-and-error retries.
+- For task creation and subtask creation, `Assignee` and `Initiator` are mandatory planning inputs even if YouTrack itself can accept a more partial payload.
+- Fast path: if the user intent clearly means "assign to me", use `Assignee=me` resolution without asking.
+- For any assignee or initiator other than `me`, do not guess from display names alone.
+- First try to resolve exact usernames from repo context:
+  - `AGENTS.md` or equivalent repo-local agent context, if present
+  - explicit team/member mappings with human names, nicknames, YouTrack usernames, or GitLab usernames
+- If repo context does not provide an exact mapping, use recent git history only as a weak fallback signal, not as authority.
+- If exact assignee or initiator usernames still cannot be determined confidently, ask the user before creating the task.
+- Do not create a task with an ambiguous assignee or initiator and hope to fix it later.
 
 ## Current Developer Resolution
 

@@ -560,6 +560,61 @@ class YtxTest(unittest.TestCase):
         self.assertEqual(result["status"], "partial_success")
         self.assertEqual(result["created_issue"]["id"], "PMA-22199")
 
+    def test_normalize_issue_can_omit_description_and_custom_fields_for_list_payloads(self) -> None:
+        payload = ytx.normalize_issue(
+            self.sample_issue(),
+            base_url="https://youtrack.example.com",
+            include_description=False,
+            include_custom_fields=False,
+        )
+
+        self.assertNotIn("description", payload)
+        self.assertNotIn("custom_fields", payload)
+        self.assertEqual(payload["state"], "In Progress")
+
+    def test_build_board_tasks_payload_omits_description_and_custom_fields(self) -> None:
+        board = self.sample_board()
+        issue = self.sample_issue()
+
+        with mock.patch.object(
+            ytx,
+            "resolve_target_board",
+            new=AsyncMock(return_value=(board, ["83-2561"])),
+        ), mock.patch.object(
+            ytx,
+            "build_board_issues_payload",
+            new=AsyncMock(
+                return_value={
+                    "board_id": "83-2561",
+                    "board_name": "PMA iOS Core",
+                    "sprint_id": "84-96818",
+                    "sprint_name": "Спринт 47",
+                    "filters": {"assignee": "oparin.ivan3"},
+                    "issues": [issue],
+                }
+            ),
+        ):
+            payload = asyncio.run(
+                ytx.build_board_tasks_payload(
+                    mock.sentinel.service,
+                    mock.sentinel.auth_manager,
+                    selection_label="wb",
+                    board_ref=None,
+                    source="web",
+                    assignee=None,
+                    me_from=None,
+                    initiator=None,
+                    state=None,
+                    active_only=False,
+                    limit=None,
+                    base_url="https://youtrack.example.com",
+                )
+            )
+
+        self.assertEqual(payload["issue_count"], 1)
+        self.assertNotIn("description", payload["issues"][0])
+        self.assertNotIn("custom_fields", payload["issues"][0])
+
     def test_preview_or_apply_issue_link_preview_mode(self) -> None:
         payload = asyncio.run(
             ytx.preview_or_apply_issue_link(

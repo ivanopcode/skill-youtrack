@@ -37,7 +37,7 @@ from instance_runtime import (
 
 class AgileService(BaseService):
     ISSUE_FIELDS = (
-        "id,idReadable,summary,description,created,updated,resolved,"
+        "id,idReadable,summary,created,updated,resolved,"
         "project(id,name),"
         "assignee(id,login,name,fullName),"
         "customFields(name,value(id,login,name,fullName,text,presentation))"
@@ -262,6 +262,8 @@ def normalize_issue(
     issue: dict[str, Any],
     preferred_id: Optional[str] = None,
     base_url: Optional[str] = None,
+    include_description: bool = True,
+    include_custom_fields: bool = True,
 ) -> dict[str, Any]:
     assignee = issue.get("assignee") or {}
     normalized_id = first_non_empty(preferred_id, issue.get("idReadable"), issue.get("id"))
@@ -273,7 +275,6 @@ def normalize_issue(
     normalized = {
         "id": normalized_id,
         "summary": issue.get("summary"),
-        "description": issue.get("description"),
         "project": (issue.get("project") or {}).get("name"),
         "state": first_non_empty(extract_custom_field(issue, "State"), extract_custom_field(issue, "Status")),
         "priority": extract_custom_field(issue, "Priority"),
@@ -288,8 +289,11 @@ def normalize_issue(
         "resolved": issue.get("resolved"),
         "created": issue.get("created"),
         "updated": issue.get("updated"),
-        "custom_fields": normalized_custom_fields,
     }
+    if include_description:
+        normalized["description"] = issue.get("description")
+    if include_custom_fields:
+        normalized["custom_fields"] = normalized_custom_fields
     issue_url = build_issue_url(base_url, normalized_id)
     if issue_url:
         normalized["url"] = issue_url
@@ -772,7 +776,19 @@ async def build_board_issues_payload(
         "source": source,
         "unresolved_issues_count": unresolved_issues_count,
         "filters": filters,
-        "issues": issues if raw else [normalize_issue(issue, base_url=base_url) for issue in issues],
+        "issues": (
+            issues
+            if raw
+            else [
+                normalize_issue(
+                    issue,
+                    base_url=base_url,
+                    include_description=False,
+                    include_custom_fields=False,
+                )
+                for issue in issues
+            ]
+        ),
     }
     board_url = build_board_url(base_url, board_id)
     if board_url:
@@ -834,7 +850,15 @@ async def build_board_tasks_payload(
             "state": state,
             "active_only": active_only,
         },
-        "issues": [normalize_issue(issue, base_url=base_url) for issue in issues],
+        "issues": [
+            normalize_issue(
+                issue,
+                base_url=base_url,
+                include_description=False,
+                include_custom_fields=False,
+            )
+            for issue in issues
+        ],
     }
     if scoped_ids:
         output["scoped_board_ids"] = scoped_ids
