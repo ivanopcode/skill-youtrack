@@ -695,10 +695,11 @@ def perform_install(
 
     claude_link: Optional[Path] = None
     codex_link: Optional[Path] = None
-    if claude_link_value is not None and codex_link_value is not None:
+    if claude_link_value is not None:
         claude_link = install_root / ".claude" / "skills" / skill_name
-        codex_link = install_root / ".codex" / "skills" / skill_name
         ensure_skill_link(claude_link_value, claude_link)
+    if codex_link_value is not None:
+        codex_link = install_root / ".codex" / "skills" / skill_name
         ensure_skill_link(codex_link_value, codex_link)
     yt_shim = None
     ytx_shim = None
