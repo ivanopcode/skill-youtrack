@@ -1,4 +1,4 @@
 interface:
   display_name: "skill-youtrack"
-  short_description: "YouTrack workflow, instances, scoped boards, issues"
-  default_prompt: "Use $skill-youtrack to work with one or more named YouTrack instances through Keychain-backed CLI commands for scoped boards, current sprint tasks, issues, comments, and sprint membership."
+  short_description: "YouTrack, boards, sprints, issues"
+  default_prompt: "Use $skill-youtrack for YouTrack workflows around instances, boards, sprints, issues, comments, field updates, and current-sprint work."

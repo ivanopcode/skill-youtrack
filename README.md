@@ -23,7 +23,9 @@ The upstream CLI comes from the `yt-cli` project by Ryan Cheley and remains the
 underlying YouTrack client used by this skill.
 
 The source-of-truth repo stays English. Installed copies render user-facing
-metadata from `locales/metadata.json` according to the selected install locale.
+metadata from `locales/metadata.json` according to the selected install locale,
+while `.skill_triggers/<locale>.md` remains the single source of truth for
+localized trigger catalogs.
 
 ## What It Does
 
@@ -61,9 +63,9 @@ Supported install locale modes:
 - `en-ru`
 - `ru-en`
 
-`en-ru` and `ru-en` are experimental. They only make `SKILL.md` frontmatter
-`description` bilingual in the installed copy. Other user-facing metadata uses
-the primary locale only.
+`en-ru` and `ru-en` are experimental. They make the installed `SKILL.md`
+frontmatter bilingual and merge trigger catalogs from both locales. Other
+user-facing metadata uses the primary locale only.
 
 ## Repository Structure
 
@@ -72,7 +74,9 @@ the primary locale only.
 - `README.md`
   Human-facing documentation for installation, operation, and maintenance
 - `locales/metadata.json`
-  Install-time translation catalog for user-facing metadata and trigger catalog
+  Install-time translation catalog for user-facing metadata
+- `.skill_triggers/`
+  Install-time localized trigger catalogs used to render `SKILL.md` frontmatter
 - `agents/openai.yaml`
   Skill card metadata rendered during installation
 - `Makefile`
@@ -152,6 +156,7 @@ This does the following:
 - copies the skill into `<repo>/.agents/skills/skill-youtrack`
 - removes nested git metadata from that copied skill
 - renders installed metadata in the selected locale
+- copies localized trigger catalogs into the committed runtime
 - prunes installer-only files from the committed runtime copy
 - prefixes the local skill metadata with a locale-aware local marker so it is distinguishable in skill UIs
 

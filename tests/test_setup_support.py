@@ -67,7 +67,6 @@ class SetupSupportTest(unittest.TestCase):
                             "short_description": "English Short",
                             "default_prompt": "Use $skill-youtrack in English.",
                             "local_prefix": "[local] ",
-                            "triggers": ["youtrack", "youtrack issue", "my tasks in youtrack"],
                         },
                         "ru": {
                             "description": "Русское описание",
@@ -75,7 +74,6 @@ class SetupSupportTest(unittest.TestCase):
                             "short_description": "Русский Short",
                             "default_prompt": "Используй $skill-youtrack по-русски.",
                             "local_prefix": "[локально] ",
-                            "triggers": ["ютрек", "youtrack issue"],
                         },
                     }
                 },
@@ -83,6 +81,15 @@ class SetupSupportTest(unittest.TestCase):
                 indent=2,
             )
             + "\n",
+            encoding="utf-8",
+        )
+        (skill_dir / ".skill_triggers").mkdir(parents=True, exist_ok=True)
+        (skill_dir / ".skill_triggers" / "en.md").write_text(
+            "- youtrack\n- my tasks in youtrack\n- youtrack board\n- youtrack sprint\n- create youtrack issue\n- update youtrack issue\n- youtrack issue comments\n",
+            encoding="utf-8",
+        )
+        (skill_dir / ".skill_triggers" / "ru.md").write_text(
+            "- ютрек\n- задачи в youtrack\n- доска youtrack\n- задачи в спринте youtrack\n- создать задачу в youtrack\n- обновить задачу в youtrack\n- комментарии в youtrack\n",
             encoding="utf-8",
         )
         (skill_dir / ".git" / "config").write_text("", encoding="utf-8")
@@ -99,12 +106,14 @@ class SetupSupportTest(unittest.TestCase):
         skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         openai_yaml = (skill_dir / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
-        self.assertIn('description: "[локально] Русское описание / English localized description"', skill_text)
+        self.assertIn(
+            'description: "Русское описание Триггеры: \\"ютрек\\", \\"задачи в youtrack\\", \\"доска youtrack\\", \\"задачи в спринте youtrack\\", \\"создать задачу в youtrack\\", \\"обновить задачу в youtrack\\". / English localized description Triggers: \\"youtrack\\", \\"my tasks in youtrack\\", \\"youtrack board\\", \\"youtrack sprint\\", \\"create youtrack issue\\", \\"update youtrack issue\\"."',
+            skill_text,
+        )
         self.assertIn('  - "ютрек"\n', skill_text)
-        self.assertIn('  - "youtrack issue"\n', skill_text)
+        self.assertIn('  - "доска youtrack"\n', skill_text)
         self.assertIn('  - "youtrack"\n', skill_text)
         self.assertIn('  - "my tasks in youtrack"\n', skill_text)
-        self.assertEqual(skill_text.count('"youtrack issue"'), 1)
         self.assertIn('display_name: "[локально] Русский Display"', openai_yaml)
         self.assertIn('short_description: "[локально] Русский Short"', openai_yaml)
 
@@ -173,10 +182,38 @@ class SetupSupportTest(unittest.TestCase):
         self.assertFalse((result.runtime_dir / "scripts" / "setup_main.py").exists())
         self.assertFalse((result.runtime_dir / "scripts" / "setup_support.py").exists())
         self.assertFalse((result.runtime_dir / "tests").exists())
+        self.assertTrue((result.runtime_dir / ".skill_triggers" / "en.md").exists())
+        self.assertTrue((result.runtime_dir / ".skill_triggers" / "ru.md").exists())
         manifest = json.loads((result.runtime_dir / ss.MANIFEST_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual(manifest["schema_version"], 2)
         self.assertNotIn("source_dir", manifest)
         self.assertNotIn("runtime_dir", manifest)
+
+    def test_render_skill_metadata_uses_markdown_triggers_as_single_source(self) -> None:
+        source_dir = self.make_source_skill_dir()
+
+        ss.render_skill_metadata(source_dir, "en", "local")
+
+        skill_text = (source_dir / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn('  - "youtrack"', skill_text)
+        self.assertIn('  - "youtrack issue comments"', skill_text)
+        self.assertIn(
+            'description: "English localized description Triggers: \\"youtrack\\", \\"my tasks in youtrack\\", \\"youtrack board\\", \\"youtrack sprint\\", \\"create youtrack issue\\", \\"update youtrack issue\\"."',
+            skill_text,
+        )
+        self.assertNotIn('[local] English localized description', skill_text)
+
+    def test_load_metadata_catalog_rejects_trigger_lists_in_metadata_json(self) -> None:
+        source_dir = self.make_source_skill_dir()
+        metadata_path = source_dir / "locales" / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["locales"]["en"]["triggers"] = ["legacy trigger"]
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        with self.assertRaises(ss.SetupError) as exc:
+            ss.load_metadata_catalog(source_dir)
+
+        self.assertIn("must define triggers only in", str(exc.exception))
 
     def test_resolve_source_dir_prefers_manifest_source_dir(self) -> None:
         source_dir = self.make_source_skill_dir().resolve()

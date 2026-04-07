@@ -1,0 +1,11 @@
+- ютрек
+- задачи в youtrack
+- доска youtrack
+- задачи в спринте youtrack
+- создать задачу в youtrack
+- обновить задачу в youtrack
+- комментарии в youtrack
+- задачи на доске youtrack
+- youtrack
+- войти в youtrack
+- аутентификация youtrack

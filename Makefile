@@ -6,4 +6,3 @@ install:
 
 skill:
 	@./scripts/bootstrap.sh --quiet
-	@echo "skill-youtrack ready"
